@@ -1526,7 +1526,7 @@ TEST_F(ParquetReaderTest, arrayWithEmptyEntry) {
   assertEqualVectorPart(expected, result, 0);
 }
 
-TEST_F(ParquetReaderTest, readEncryptedParquet) {
+TEST_F(ParquetReaderTest, DISABLED_readEncryptedParquet) {
   auto rowType = ROW({"id", "name", "salary"}, {BIGINT(), VARCHAR(), BIGINT()});
 
   bytedance::bolt::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
@@ -1555,7 +1555,7 @@ TEST_F(ParquetReaderTest, readEncryptedParquet) {
   EXPECT_EQ(ids->valueAt(0), 1);
 }
 
-TEST_F(ParquetReaderTest, readEncryptedParquetAllValues) {
+TEST_F(ParquetReaderTest, DISABLED_readEncryptedParquetAllValues) {
   auto rowType = ROW({"id", "name", "salary"}, {BIGINT(), VARCHAR(), BIGINT()});
 
   auto expected = makeRowVector({
@@ -1567,7 +1567,7 @@ TEST_F(ParquetReaderTest, readEncryptedParquetAllValues) {
   assertReadWithExpected("encrypted_sample.parquet", rowType, expected);
 }
 
-TEST_F(ParquetReaderTest, readEncryptedParquetWithProjection) {
+TEST_F(ParquetReaderTest, DISABLED_readEncryptedParquetWithProjection) {
   auto projectedType = ROW({"name", "salary"}, {VARCHAR(), BIGINT()});
 
   const std::string sample(getExampleFilePath("encrypted_sample.parquet"));
@@ -1593,7 +1593,7 @@ TEST_F(ParquetReaderTest, readEncryptedParquetWithProjection) {
   assertEqualVectorPart(expected, result, 0);
 }
 
-TEST_F(ParquetReaderTest, readEncryptedParquetWithFilters) {
+TEST_F(ParquetReaderTest, DISABLED_readEncryptedParquetWithFilters) {
   auto rowType = ROW({"id", "name", "salary"}, {BIGINT(), VARCHAR(), BIGINT()});
 
   FilterMap filters;

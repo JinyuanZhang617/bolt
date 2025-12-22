@@ -248,7 +248,8 @@ SplitReader::SplitReader(
       ioStats_(ioStats),
       baseReaderOpts_(connectorQueryCtx->memoryPool()),
       isPartOfPaimonSplit_(isPartOfPaimonSplit) {
-  if ((hiveSplit->fileFormat == dwio::common::FileFormat::TEXT) &&
+  if ((hiveSplit->fileFormat == dwio::common::FileFormat::TEXT ||
+     hiveSplit->fileFormat == dwio::common::FileFormat::LANCE) &&
       hiveTableHandle->isFilterPushdownEnabled()) {
     BOLT_FAIL(
         "{} reader does not support filter pushdown yet!",
@@ -395,7 +396,8 @@ void SplitReader::prepareSplit(
 
   // Check filters and see if the whole split can be skipped.
   // Not all formats or tables support this (e.g. Hudi, TXT)
-  if ((baseReaderOpts_.getFileFormat() != dwio::common::FileFormat::TEXT) &&
+  if ((baseReaderOpts_.getFileFormat() != dwio::common::FileFormat::LANCE &&
+      baseReaderOpts_.getFileFormat() != dwio::common::FileFormat::TEXT) &&
       !testFilters(
           scanSpec_.get(),
           baseReader_.get(),

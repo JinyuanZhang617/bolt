@@ -28,4 +28,6 @@
 add_subdirectory(s3fs)
 add_subdirectory(gcs)
 add_subdirectory(abfs)
-add_subdirectory(hdfs)
+if(NOT BOLT_ENABLE_BYTEDANCE_INTERNAL)
+  add_subdirectory(hdfs)
+endif()

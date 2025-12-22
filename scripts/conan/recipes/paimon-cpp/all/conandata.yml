@@ -16,7 +16,13 @@ sources:
   "0.0.4-bolt":
     url: "https://github.com/alibaba/paimon-cpp.git"
     revision: "d474ebc24ac302239ca596a2d72f32210586b882"
+  "0.0.4-bolt-byted":
+    url: "git@code.byted.org:dp/paimon-cpp-bolt.git"
+    revision: "f6562e6322fd23389d000a569656aa858f84f29c"
 patches:
   "0.0.4-bolt":
+    - patch_file: "patches/paimon-cpp-conan-deps.patch"
+      patch_description: "Add Conan dependencies support"
+  "0.0.4-bolt-byted":
     - patch_file: "patches/paimon-cpp-conan-deps.patch"
       patch_description: "Add Conan dependencies support"

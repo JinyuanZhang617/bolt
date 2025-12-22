@@ -101,7 +101,7 @@ class ParquetTypeWithId : public dwio::common::TypeWithId {
     return isDCMap_;
   }
 
-  const std::unordered_map<std::string, std::vector<std::string>>& getDcKeys()
+  const std::unordered_map<std::string, std::vector<std::string>> getDcKeys()
       const override {
     return dcKeys_;
   }

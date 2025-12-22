@@ -15,3 +15,5 @@
 versions:
   "0.0.4-bolt":
     folder: all
+  "0.0.4-bolt-byted":
+    folder: all

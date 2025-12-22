@@ -1,0 +1,206 @@
+name: CI for internal branches
+trigger:
+    manual:
+    push:
+      types: [ branch ]
+      branches: [ "rebase-main" ]
+      notification:
+        when: [ failure ]
+        to: [ "7595802602588114657" ]
+jobs:
+  unittest:
+    image: hub.byted.org/compile/bolt_compile_img:7789b13c814b95c795f4c075a50f750d
+    auto-checkout: false
+    runs-on:
+      spec: m1.8xlarge
+    envs:
+      CCACHE_REMOTE_STORAGE: "redis://bolt-ccache-redis.byted.org:6667"
+      CCACHE_DIR: "/root/.ccache"
+      CCACHE_MAXSIZE: "100G"
+      CCACHE_REDIS_TLS: "1"
+      CCACHE_REDIS_TLS_CA_FILE: "/opt/redis/certs/ca.crt"
+      CCACHE_REDIS_TLS_CERT_FILE: "/opt/redis/certs/redis-client.crt"
+      CCACHE_REDIS_TLS_KEY_FILE: "/opt/redis/certs/redis-client.key"
+      http_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      https_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      no_proxy: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+      HTTP_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      HTTPS_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      NO_PROXY: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+    caches:
+      - backend: ebs
+        key: bolt-ci
+        size: 256
+        paths:
+          - /root/.ccache
+          - /root/.conan2/p
+          - /root/.m2/repository/
+    steps:
+      - name: Run Unit Tests
+        commands:
+          - git clone --depth=1 --branch ${{Head.Branch}} git@code.byted.org:dp/bolt.git
+          - cd bolt
+          - conan remote remove bolt-dev && conan remote login test bolt -p Bolt2023!
+          - bash ./scripts/install-bolt-deps.sh
+          - bash -c "source ~/.bashrc && make submodules && make unittest_release" >> /home/code/ci_log.txt 2>&1
+      - name: Upload Log
+        uses: actions/upload-artifact
+        inputs:
+          name: ci_log
+          path: /home/code/ci_log.txt
+
+  gluten-cpp-ut:
+    image: hub.byted.org/compile/bolt_compile_img:7789b13c814b95c795f4c075a50f750d
+    auto-checkout: false
+    runs-on:
+      spec: m1.8xlarge
+    envs:
+      CCACHE_REMOTE_STORAGE: "redis://bolt-ccache-redis.byted.org:6667"
+      CCACHE_DIR: "/root/.ccache"
+      CCACHE_MAXSIZE: "100G"
+      CCACHE_REDIS_TLS: "1"
+      CCACHE_REDIS_TLS_CA_FILE: "/opt/redis/certs/ca.crt"
+      CCACHE_REDIS_TLS_CERT_FILE: "/opt/redis/certs/redis-client.crt"
+      CCACHE_REDIS_TLS_KEY_FILE: "/opt/redis/certs/redis-client.key"
+      http_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      https_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      no_proxy: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+      HTTP_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      HTTPS_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      NO_PROXY: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+    caches:
+      - backend: ebs
+        key: bolt-ci
+        size: 256
+        paths:
+          - /root/.ccache
+          - /root/.conan2/p
+          - /root/.m2/repository/
+    steps:
+      - uses: actions/setup-bvc
+      - name: Gluten CPP UT
+        commands:
+          - git clone --depth=1 --branch ${{Head.Branch}} git@code.byted.org:dp/bolt.git
+          - cd bolt
+          - conan remote remove bolt-dev && conan remote login test bolt -p Bolt2023!
+          - bash ./scripts/install-bolt-deps.sh
+          - bash -c "source ~/.bashrc && make submodules && make release_spark_with_test && make install" >> /home/code/ci_log.txt 2>&1
+          - export GLUTEN_BRANCH=main
+          - bash -c "source ~/.bashrc && git clone --depth=1 --branch ${GLUTEN_BRANCH} git@code.byted.org:olap/gluten.git && cd gluten && make cpp-test-release"  >> /home/code/ci_log.txt 2>&1
+      - name: Upload Log
+        uses: actions/upload-artifact
+        inputs:
+          name: ci_log
+          path: /home/code/ci_log.txt
+
+  backend-bolt-spark-ut:
+    name: backend-bolt-spark-ut
+    runs-on:
+      spec: m1.8xlarge
+    image: hub.byted.org/compile/bolt_compile_img:7789b13c814b95c795f4c075a50f750d
+    timeout: 240
+    auto-checkout: false
+    envs:
+      CCACHE_REMOTE_STORAGE: "redis://bolt-ccache-redis.byted.org:6667"
+      CCACHE_DIR: "/root/.ccache"
+      CCACHE_MAXSIZE: "100G"
+      CCACHE_REDIS_TLS: "1"
+      CCACHE_REDIS_TLS_CA_FILE: "/opt/redis/certs/ca.crt"
+      CCACHE_REDIS_TLS_CERT_FILE: "/opt/redis/certs/redis-client.crt"
+      CCACHE_REDIS_TLS_KEY_FILE: "/opt/redis/certs/redis-client.key"
+      http_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      https_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      no_proxy: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+      HTTP_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      HTTPS_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      NO_PROXY: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+    caches:
+      - backend: ebs
+        key: bolt-ci
+        size: 256
+        paths:
+          - /root/.ccache
+          - /root/.conan2/p
+          - /root/.m2/repository/
+    steps:
+      - uses: actions/setup-bvc
+      - name: backend-bolt-spark-ut
+        continue-on-error: true
+        commands:
+          - git clone --depth=1 --branch ${{Head.Branch}} git@code.byted.org:dp/bolt.git
+          - cd bolt
+          - conan remote remove bolt-dev && conan remote login test bolt -p Bolt2023!
+          - bash ./scripts/install-bolt-deps.sh
+          - bash -c "source ~/.bashrc && make submodules && make release_spark && make install" >> /home/code/ci_log.txt 2>&1
+          - export SPARK_LOCAL_HOSTNAME=localhost
+          - export SPARK_SCALA_VERSION=2.12
+          - export ARROW_THRIFT_URL=https://repo.huaweicloud.com/apache/thrift/0.16.0/thrift-0.16.0.tar.gz
+          - export GLUTEN_BRANCH=main
+          - git clone --depth=1 git@code.byted.org:olap/gluten.git -b ${GLUTEN_BRANCH}
+          - cd gluten
+          - bash -c "set -o pipefail; make release && make spark-ut-test" >> /home/code/ci_log.txt 2>&1
+      - name: Upload Log
+        uses: actions/upload-artifact
+        inputs:
+          name: ci_log
+          path: /home/code/ci_log.txt
+
+  backend-bolt-spark-slow-ut:
+    name: backend-bolt-spark-slow-ut
+    runs-on:
+      spec: m1.8xlarge
+    image: hub.byted.org/compile/bolt_compile_img:7789b13c814b95c795f4c075a50f750d
+    auto-checkout: false
+    timeout: 240
+    envs:
+      CCACHE_REMOTE_STORAGE: "redis://bolt-ccache-redis.byted.org:6667"
+      CCACHE_DIR: "/root/.ccache"
+      CCACHE_MAXSIZE: "100G"
+      CCACHE_REDIS_TLS: "1"
+      CCACHE_REDIS_TLS_CA_FILE: "/opt/redis/certs/ca.crt"
+      CCACHE_REDIS_TLS_CERT_FILE: "/opt/redis/certs/redis-client.crt"
+      CCACHE_REDIS_TLS_KEY_FILE: "/opt/redis/certs/redis-client.key"
+      http_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      https_proxy: "http://sys-proxy-rd-relay.byted.org:8118"
+      no_proxy: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+      HTTP_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      HTTPS_PROXY: "http://sys-proxy-rd-relay.byted.org:8118"
+      NO_PROXY: ".byted.org,localhost,127.0.0.1,0.0.0.0,127.17.0.2,.cn"
+    caches:
+      - backend: ebs
+        key: bolt-ci
+        size: 256
+        paths:
+          - /root/.ccache
+          - /root/.conan2/p
+          - /root/.m2/repository/
+    steps:
+      - uses: actions/setup-bvc
+      - name: backend-bolt-spark-slow-ut
+        continue-on-error: true
+        commands:
+          - git clone --depth=1 --branch ${{Head.Branch}} git@code.byted.org:dp/bolt.git
+          - cd bolt
+          - conan remote remove bolt-dev && conan remote login test bolt -p Bolt2023!
+          - bash ./scripts/install-bolt-deps.sh
+          - bash -c "source ~/.bashrc && make submodules && make release_spark && make install" >> /home/code/ci_log.txt 2>&1
+          - export SPARK_LOCAL_HOSTNAME=localhost
+          - export SPARK_SCALA_VERSION=2.12
+          - export GLUTEN_BRANCH=main
+          - git clone --depth=1 git@code.byted.org:olap/gluten.git -b ${GLUTEN_BRANCH}
+          - cd gluten
+          - bash -c "set -o pipefail;make release && make spark-ut-slow-test" >> /home/code/ci_log.txt 2>&1
+      - name: Upload Log
+        uses: actions/upload-artifact
+        inputs:
+          name: ci_log
+          path: /home/code/ci_log.txt
+
+  merge-to-main:
+    name: "update main with rebase/main"
+    image: hub.byted.org/codebase/ci_debian_bullseye
+    timeout: 240
+    depends: [unittest, gluten-cpp-ut, backend-bolt-spark-ut, backend-bolt-spark-slow-ut]
+    steps:
+      - commands:
+          - bash .codebase/pipelines/scripts/push_rebase_branch.sh

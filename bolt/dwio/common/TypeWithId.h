@@ -104,7 +104,7 @@ class TypeWithId : public bolt::Tree<std::shared_ptr<const TypeWithId>> {
     return false;
   }
 
-  virtual const std::unordered_map<std::string, std::vector<std::string>>&
+  virtual const std::unordered_map<std::string, std::vector<std::string>>
   getDcKeys() const {
     static const std::unordered_map<std::string, std::vector<std::string>>
         EMPTY_MAP;

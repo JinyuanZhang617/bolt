@@ -27,7 +27,10 @@
 
 if(BOLT_ENABLE_PARQUET)
   add_subdirectory(thrift)
-  add_subdirectory(encryption)
+  #   For internal usages, we use the encryption directory from bytedance_internal
+  if(NOT ${BOLT_ENABLE_BYTEDANCE_INTERNAL})
+    add_subdirectory(encryption)
+  endif()
   add_subdirectory(reader)
   add_subdirectory(arrow)
   add_subdirectory(writer)

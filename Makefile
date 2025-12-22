@@ -53,6 +53,8 @@
 # Targets for running CTest and generating code coverage reports
 .PHONY: unittest unittest_debug unittest_release
 .PHONY: unittest_release_spark unittest_debug_spark unittest_coverage
+# Bolt Internal Logic
+.PHONY: submodules bytedance-internal-submodule
 
 # -----------------------------------------------------------------
 # Interfaces to control CMake options via Makefile.
@@ -74,6 +76,7 @@ CONAN_CONFIG ?=
 # options in CONAN_OVERRIDE will override the options in CONAN_OPTIONS
 CONAN_OVERRIDE ?=
 
+
 BUILD_VERSION ?= main
 PROFILE ?= default
 BUILD_TYPE=Release
@@ -88,10 +91,12 @@ BOLT_BUILD_TESTING_WITH_COVERAGE ?= "OFF"
 # TODO: remove `BUILD_USER` and `BUILD_CHANNEL`
 BUILD_USER ?=
 BUILD_CHANNEL ?=
+ENABLE_CUDF ?= False
 
 # temporary variables for build scripts, not intended for users to set directly
 BUILD_BASE_DIR=_build
 BENCHMARKS_DUMP_DIR=dumps
+BYTEDANCE_INTERNAL_BUILD ?= True
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
@@ -169,6 +174,12 @@ clang-format-check:
 	if grep -q 'warning' log.txt; then false; fi
 	@rm -f files.txt log.txt
 
+bytedance-internal-submodule:		#: Check out code for bolt submodule
+	git submodule sync --recursive
+	git submodule update --init --recursive
+
+submodules: bytedance-internal-submodule
+
 conan_install:
 	if [ ! -d "_build" ]; then \
 		mkdir _build; \
@@ -176,7 +187,7 @@ conan_install:
 	git rev-parse HEAD && \
 	mkdir -p _build/${BUILD_TYPE} && \
 	cd _build/${BUILD_TYPE} && \
-	echo " \
+	echo " -o bolt/*:bytedance_internal_build=${BYTEDANCE_INTERNAL_BUILD} \
 	-pr:h ${PROFILE} \
 	-pr:h ../../scripts/conan/bolt.profile \
 	${CONAN_OPTIONS} ${CONAN_OVERRIDE}" > new_conan.options && \
