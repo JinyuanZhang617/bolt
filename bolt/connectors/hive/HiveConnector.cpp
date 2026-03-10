@@ -183,7 +183,7 @@ void HiveConnectorFactory::initialize() {
     filesystems::registerGcsFileSystem();
 #endif
 #ifdef BOLT_ENABLE_ABFS
-    filesystems::abfs::registerAbfsFileSystem();
+    filesystems::registerAbfsFileSystem();
 #endif
     return true;
   }();

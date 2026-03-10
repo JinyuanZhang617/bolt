@@ -276,7 +276,7 @@ void TraceReplayRunner::init() {
   filesystems::registerGcsFileSystem();
 #endif
 #ifdef BOLT_ENABLE_ABFS
-  filesystems::abfs::registerAbfsFileSystem();
+  filesystems::registerAbfsFileSystem();
 #endif
 
   dwio::common::registerFileSinks();
