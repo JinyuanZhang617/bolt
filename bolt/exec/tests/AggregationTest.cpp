@@ -506,7 +506,7 @@ TEST_P(AggregationTest, missingFunctionOrSignature) {
       [&](core::AggregationNode::Step step,
           const std::vector<TypePtr>& argTypes,
           const TypePtr& resultType,
-          const core::QueryConfig &
+          const core::QueryConfig&
           /*config*/) -> std::unique_ptr<exec::Aggregate> {
         BOLT_UNREACHABLE();
       });
@@ -1089,7 +1089,6 @@ TEST_P(AggregationTest, partialDistinctFlushesAccumulatedOutputOnAbandon) {
   }
   ASSERT_EQ(101, numRows);
 }
-
 
 TEST_P(AggregationTest, toIntermediate) {
   auto vectors = {
