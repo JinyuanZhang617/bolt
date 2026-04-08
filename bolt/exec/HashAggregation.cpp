@@ -599,7 +599,6 @@ RowVectorPtr HashAggregation::getOutput() {
          accumulatedOutput_->size() >= minOutputRows_ ||
          abandonedPartialAggregation_)) {
       auto result = std::move(accumulatedOutput_);
-      accumulatedOutput_ = nullptr;
       resetPartialOutputIfNeed();
       return result;
     }
