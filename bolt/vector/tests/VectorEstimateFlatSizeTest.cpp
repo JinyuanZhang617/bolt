@@ -536,14 +536,19 @@ TEST_F(VectorEstimateFlatSizeTest, structs) {
 
   EXPECT_EQ(28800, makeDict(row)->retainedSize());
   EXPECT_EQ(2838, makeDict(row)->estimateFlatSize());
+  // Flattening a dict(RowVector) copies each child from the base flat vector,
+  // so StringViewStats is not computed (best-effort). Falls back to
+  // retainedSize-based estimate.
   EXPECT_EQ(3295, flatten(makeDict(row))->estimateFlatSize());
 
-  // Flat struct with dictionary encoded fields.
+  // Flat struct with dictionary encoded fields. The string child is
+  // dict-encoded, so StringViewStats is computed during copy, giving a more
+  // accurate (smaller) estimate.
   row = makeRowVector(
       {makeDict(row->childAt(0)),
        makeDict(row->childAt(1)),
        makeDict(row->childAt(2))});
   EXPECT_EQ(29632, row->retainedSize());
   EXPECT_EQ(2837, row->estimateFlatSize());
-  EXPECT_EQ(3295, flatten(row)->estimateFlatSize());
+  EXPECT_EQ(2943, flatten(row)->estimateFlatSize());
 }

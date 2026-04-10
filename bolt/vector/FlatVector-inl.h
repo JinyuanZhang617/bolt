@@ -178,6 +178,12 @@ void FlatVector<T>::copyValuesAndNulls(
     mutableRawValues();
   }
 
+  // Used to track string stats for StringView in non-flat source paths.
+  // Flat source path skips stats computation (best-effort: nullopt is fine).
+  uint64_t stringStatsTotal = 0;
+  uint64_t stringStatsMax = 0;
+  const bool kAllSelected = rows.countSelected() == BaseVector::length_;
+
   if (source->isFlatEncoding()) {
     auto* flatSource = source->asUnchecked<FlatVector<T>>();
     if (flatSource->values() == nullptr) {
@@ -252,6 +258,7 @@ void FlatVector<T>::copyValuesAndNulls(
         }
       }
     }
+
   } else if (source->isConstantEncoding()) {
     if (source->isNullAt(0)) {
       BaseVector::addNulls(rows);
@@ -270,6 +277,15 @@ void FlatVector<T>::copyValuesAndNulls(
       }
     } else {
       rows.applyToSelected([&](int32_t row) { rawValues_[row] = value; });
+    }
+    if constexpr (std::is_same_v<T, StringView>) {
+      if (kAllSelected) {
+        if (!value.isInline()) {
+          // Only count non-inline strings.
+          stringStatsTotal = rows.countSelected() * value.size();
+        }
+        stringStatsMax = value.size();
+      }
     }
 
     rows.clearNulls(rawNulls);
@@ -294,7 +310,18 @@ void FlatVector<T>::copyValuesAndNulls(
               auto* rawValues = reinterpret_cast<uint64_t*>(rawValues_);
               bits::setBit(rawValues, row, decoded.valueAt<bool>(row));
             } else {
-              rawValues_[row] = decoded.valueAt<T>(row);
+              auto val = decoded.valueAt<T>(row);
+              rawValues_[row] = val;
+              if constexpr (std::is_same_v<T, StringView>) {
+                if (kAllSelected) {
+                  if (!val.isInline()) {
+                    // Only count non-inline strings.
+                    stringStatsTotal += val.size();
+                  }
+                  stringStatsMax = std::max(
+                      stringStatsMax, static_cast<uint64_t>(val.size()));
+                }
+              }
             }
           },
           nulls);
@@ -315,6 +342,17 @@ void FlatVector<T>::copyValuesAndNulls(
             bits::setBit(rawValues, row, sourceVector->valueAt(sourceRow));
           } else {
             rawValues_[row] = sourceVector->valueAt(sourceRow);
+            if constexpr (std::is_same_v<T, StringView>) {
+              if (kAllSelected) {
+                if (!rawValues_[row].isInline()) {
+                  // Only count non-inline strings.
+                  stringStatsTotal += rawValues_[row].size();
+                }
+                stringStatsMax = std::max(
+                    stringStatsMax,
+                    static_cast<uint64_t>(rawValues_[row].size()));
+              }
+            }
           }
 
           if (rawNulls) {
@@ -324,6 +362,17 @@ void FlatVector<T>::copyValuesAndNulls(
           bits::setNull(rawNulls, row);
         }
       });
+    }
+  }
+
+  if constexpr (std::is_same_v<T, StringView>) {
+    if (kAllSelected && stringStatsMax > 0) {
+      // Stats were computed by the non-flat source path. Set them.
+      this->setStringViewStats(
+          StringViewStats{stringStatsTotal, stringStatsMax});
+    } else if (!kAllSelected) {
+      // Partial copy invalidates any previously cached stats.
+      this->stringStats_.reset();
     }
   }
 }
