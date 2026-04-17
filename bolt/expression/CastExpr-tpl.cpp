@@ -702,6 +702,14 @@ class Converter {
         to.toGMT(*timeZone_, &hasError);
       }
       return hasError ? ConvertStatus::OTHER_FAILURE : ConvertStatus::SUCCESS;
+    } else if constexpr (fromKind == PrimitiveKind::BOOLEAN) {
+      if constexpr (isInSpark) {
+        // Spark treats boolean as microseconds since epoch when casting to
+        // timestamp: false -> 0us, true -> 1us.
+        to = Timestamp::fromMicrosNoError(from ? 1 : 0);
+        return ConvertStatus::SUCCESS;
+      }
+      return ConvertStatus::OTHER_FAILURE;
     } else if constexpr (fromInteger || fromFloat) {
       if constexpr (fromFloat) {
         if (FOLLY_UNLIKELY(std::isnan(from) || std::isinf(from))) {
@@ -1061,12 +1069,15 @@ void registerConverter() {
       PrimitiveKind::BIGINT};
   static constexpr std::array floatType = {
       PrimitiveKind::REAL, PrimitiveKind::DOUBLE};
+  static constexpr std::array booleanType = {PrimitiveKind::BOOLEAN};
   static constexpr std::array timestampType = {PrimitiveKind::TIMESTAMP};
   static constexpr std::array binaryType = {PrimitiveKind::BINARY};
   // integer to timestamp type conversion
   ConverterRegister<integerType, timestampType>::registerConverter();
   // float/double to timestamp type conversion
   ConverterRegister<floatType, timestampType>::registerConverter();
+  // boolean to timestamp type conversion
+  ConverterRegister<booleanType, timestampType>::registerConverter();
   // integer to binary type conversion
   ConverterRegister<integerType, binaryType>::registerConverter();
   // timestamp to integer type conversion
