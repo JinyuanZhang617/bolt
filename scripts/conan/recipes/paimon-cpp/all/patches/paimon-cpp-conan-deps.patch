@@ -112,7 +112,7 @@ new file mode 100644
 index 0000000..8462b02
 --- /dev/null
 +++ b/cmake_modules/PaimonConanDeps.cmake
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,184 @@
 +# Copyright 2024-present Alibaba Inc.
 +#
 +# Licensed under the Apache License, Version 2.0 (the "License");
@@ -154,13 +154,14 @@ index 0000000..8462b02
 +
 +    # --- Helper: get the config suffix from the active build type ---
 +    # Conan generates variables like <pkg>_INCLUDE_DIRS_RELEASE or _DEBUG.
-+    # Map CMAKE_BUILD_TYPE to the suffix Conan uses.
-+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
++    # Map CMAKE_BUILD_TYPE to the suffix Conan uses. SetupCxxFlags uppercases it for compatibility, we also compare the uppercase version.
++    string(TOUPPER "${CMAKE_BUILD_TYPE}" _PAIMON_BUILD_TYPE)
++    if(_PAIMON_BUILD_TYPE STREQUAL "DEBUG")
 +        set(_PAIMON_CONAN_CONFIG_SUFFIX "_DEBUG")
-+    elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
++    elseif(_PAIMON_BUILD_TYPE STREQUAL "RELWITHDEBINFO")
 +        # Conan doesn't generate RelWithDebInfo data files; fall back to Release
 +        set(_PAIMON_CONAN_CONFIG_SUFFIX "_RELEASE")
-+    elseif(CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
++    elseif(_PAIMON_BUILD_TYPE STREQUAL "MINSIZEREL")
 +        set(_PAIMON_CONAN_CONFIG_SUFFIX "_RELEASE")
 +    else()
 +        # Default to Release (covers empty CMAKE_BUILD_TYPE and unknown types)
