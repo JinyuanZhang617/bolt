@@ -173,8 +173,6 @@ void generateJsonTyped(
               type->toString()));
         }
       } else if constexpr (std::is_same_v<T, Timestamp>) {
-        LOG(INFO)
-            << "[log by jy]EXECUTING PRESTOSQL JSON CAST: generateJsonTyped<Timestamp>. This confirms that the PrestoSQL JSON Cast version is being called.";
         result.append("\"");
         static const auto formatter =
             bytedance::bolt::functions::buildJodaDateTimeFormatter(
