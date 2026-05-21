@@ -644,7 +644,7 @@ TEST_F(ToJsonTest, fromSpark) {
     auto rowChild = makeNullableFlatVector<Timestamp>({Timestamp(1, 1)});
     auto rowVector = makeRowVector({rowChild});
     auto expectedVector = makeNullableFlatVector<StringView>(
-        {R"({"c0":"1970-01-01T00:00:01.000+00:00"})"}, VARCHAR());
+        {R"({"c0":"1970-01-01T00:00:01.000Z"})"}, VARCHAR());
     toJsonSimple("to_json(c0)", {rowVector}, expectedVector);
 
     setQueryTimeZone("Asia/Shanghai");

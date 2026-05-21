@@ -200,7 +200,7 @@ void generateJsonTyped(
             false,
             timePolicy,
             true,
-            std::nullopt);
+            "Z");
         result.append(buffer, size);
         result.append("\"");
       } else if constexpr (std::is_same_v<T, VariantValue>) {
