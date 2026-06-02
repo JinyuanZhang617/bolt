@@ -540,12 +540,16 @@ static void customScalarFunction(
   BOLT_UNREACHABLE();
 }
 
-::duckdb::idx_t customAggregateState(
+::duckdb::idx_t customAggregateState() { BOLT_UNREACHABLE(); }
+
+::duckdb::idx_t customAggregateState_old(
     const ::duckdb::AggregateFunction& /*function*/) {
   BOLT_UNREACHABLE();
 }
 
-void customAggregateInitialize(
+void customAggregateInitialize(::duckdb::data_ptr_t /* state */) { BOLT_UNREACHABLE(); }
+
+void customAggregateInitialize_old(
     const ::duckdb::AggregateFunction& /*function*/,
     ::duckdb::data_ptr_t /* state */) {
   BOLT_UNREACHABLE();

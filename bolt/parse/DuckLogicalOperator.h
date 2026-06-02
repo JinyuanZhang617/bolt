@@ -57,7 +57,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
 #include <duckdb.hpp> // @manual
-#include <duckdb/common/insertion_order_preserving_map.hpp> // @manual
+
 
 namespace duckdb {
 
@@ -114,7 +114,7 @@ class LogicalGet : public LogicalOperator {
   //! The set of input parameters for the table function
   vector<Value> parameters;
   string GetName() const override;
-  InsertionOrderPreservingMap<string> ParamsToString() const override;
+  string ParamsToString() const override;
   //! Returns the underlying table that is being scanned, or nullptr if there is
   //! none
   optional_ptr<TableCatalogEntry> GetTable() const;
@@ -195,7 +195,7 @@ class LogicalAggregate : public LogicalOperator {
   vector<unique_ptr<BaseStatistics>> group_stats;
 
  public:
-  InsertionOrderPreservingMap<string> ParamsToString() const override;
+  string ParamsToString() const override;
 
   vector<ColumnBinding> GetColumnBindings() override;
 
