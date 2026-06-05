@@ -62,6 +62,26 @@ void PageReader::seekToPage(int64_t row, bool keepRepDefRawData) {
       numRowsInPage_ = 0;
       break;
     }
+    // For nested (non top level) columns, 'preloadRepDefs' only fully
+    // decodes the first 'decodeRepDefPageCount_' pages and keeps the
+    // remaining pages as raw rep/def bytes inside 'preloadedRepDefs_'.
+    // When a leaf-level filter pushdown triggers a skip()/seekToPage()
+    // that walks past the sampled boundary, the consumer side
+    // ('setPageRowInfo' inside 'prepareDataPageV1') indexes
+    // 'numLeavesInPage_[pageIndex_]' and would go out of bounds.
+    //
+    // Materialise just enough preloaded rep/def bytes BEFORE entering
+    // the next page so that 'setPageRowInfo' remains a pure lookup.
+    // The loop only fires when we are about to cross the sampled
+    // boundary and there is something left to decode, mirroring (and
+    // complementing) the "ahead by one page" invariant established at
+    // the exit of 'decodeRepDefs'.
+    if (hasChunkRepDefs_ && !isTopLevel_ && maxRepeat_ > 0) {
+      while (pageIndex_ + 1 >= static_cast<int32_t>(numLeavesInPage_.size()) &&
+             !preloadedRepDefs_.empty()) {
+        loadMoreRepDefs();
+      }
+    }
     PageHeader pageHeader = readPageHeader();
     pageStart_ = pageDataStart_ + pageHeader.compressed_page_size;
 
