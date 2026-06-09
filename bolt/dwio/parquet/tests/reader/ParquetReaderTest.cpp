@@ -2906,8 +2906,8 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST_F(ParquetReaderTest, lazyRepDefSanitizedCustomTagRepro) {
-  const std::string kFilePath = getExampleFilePath(
-      "bolt_lazy_repdef_sanitized_custom_tag.parquet");
+  const std::string kFilePath =
+      getExampleFilePath("bolt_lazy_repdef_sanitized_custom_tag.parquet");
   constexpr int32_t kBatchRows = 4096;
 
   if (!std::filesystem::exists(kFilePath)) {
@@ -2916,8 +2916,7 @@ TEST_F(ParquetReaderTest, lazyRepDefSanitizedCustomTagRepro) {
   }
 
   auto rowType =
-      ROW({"filter_col", "map_col"},
-          {INTEGER(), MAP(VARCHAR(), VARCHAR())});
+      ROW({"filter_col", "map_col"}, {INTEGER(), MAP(VARCHAR(), VARCHAR())});
 
   auto scanSpec = makeScanSpec(rowType);
   scanSpec->getOrCreateChild("filter_col")->setFilter(exec::between(3, 4));
