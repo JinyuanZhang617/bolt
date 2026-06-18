@@ -49,6 +49,7 @@ bolt_add_library(
   # RegisterArithmetic.cpp
   # RegisterCompare.cpp
   SplitFunctions.cpp
+  StringSplitSQL.cpp
   String.cpp
   UnscaledValueFunction.cpp
   VariantEncoding.cpp

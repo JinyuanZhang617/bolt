@@ -87,6 +87,7 @@ add_executable(
   SparkRoundTest.cpp
   SparkSqlDateTimeFunctionsTest.cpp
   SplitFunctionsTest.cpp
+  StringSplitSQLTest.cpp
   StringTest.cpp
   ToJsonTest.cpp
   UdfMapArrayCombineTest.cpp
