@@ -313,6 +313,13 @@ BOLT_DECLARE_VECTOR_FUNCTION(
     ArrayContainsFunction::signatures(),
     std::make_unique<ArrayContainsFunction>(true));
 
+// Spark array_contains uses null-safe equality for complex elements, e.g.
+// row(1, null) matches row(1, null) and does not match row(1, 2).
+BOLT_DECLARE_VECTOR_FUNCTION(
+    udf_spark_array_contains,
+    ArrayContainsFunction::signatures(),
+    std::make_unique<ArrayContainsFunction>(false));
+
 // Internal function only used for testing. This function allows the array to
 // have null elements and considers null as a value, i.e., null == null.
 BOLT_DECLARE_VECTOR_FUNCTION(
