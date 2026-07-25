@@ -137,8 +137,71 @@ struct UnixTimestampFunctionBase {
                                    : sessionTzID_.value_or(0);
   }
 
-  // calculate china/shanghai unix-timestamp
-  Timestamp calculateCnUnixTimestamp(Timestamp& timestamp) {
+  bool hasNegativeYear(const DateTimeResultValue& result) {
+    static const int64_t kFirstNonNegativeYearDay =
+        util::daysSinceEpochFromDate(0, 1, 1);
+    return result.timestamp.getDays() < kFirstNonNegativeYearDay;
+  }
+
+  bool tryConvertToGMT(
+      Timestamp& timestamp,
+      const tz::TimeZone& zone,
+      bool nullOnNonexistentLocalTime) {
+    constexpr int64_t kMinSecondsForTimeZoneAdjustment =
+        -1096193779200l + 86400l;
+    if (timestamp.getSeconds() < kMinSecondsForTimeZoneAdjustment ||
+        timestamp.getSeconds() > Timestamp::kMaxSeconds) {
+      return false;
+    }
+
+    if (const auto offset = zone.offset()) {
+      timestamp = Timestamp(
+          timestamp.getSeconds() - offset->count() * 60, timestamp.getNanos());
+      return true;
+    }
+
+    ::date::local_time<std::chrono::seconds> localTime{
+        std::chrono::seconds(timestamp.getSeconds())};
+    const auto info = zone.tz()->get_info(localTime);
+    if (info.result == ::date::local_info::nonexistent &&
+        nullOnNonexistentLocalTime) {
+      return false;
+    }
+
+    // Spark Java shifts nonexistent local timestamps in ordinary DST gaps
+    // forward by the gap duration. This is equivalent to converting using the
+    // offset before the transition. For ambiguous timestamps, Spark picks the
+    // earlier instant, which also uses the first offset.
+    auto sysTime =
+        ::date::sys_time<std::chrono::seconds>{localTime.time_since_epoch()} -
+        info.first.offset;
+    timestamp =
+        Timestamp(sysTime.time_since_epoch().count(), timestamp.getNanos());
+    return true;
+  }
+
+  bool tryConvertToGMT(
+      Timestamp& timestamp,
+      int16_t tzID,
+      bool nullOnNonexistentLocalTime) {
+    if (tzID == 0) {
+      return true;
+    }
+    if (tzID <= 1680) {
+      timestamp = Timestamp(
+          timestamp.getSeconds() - getPrestoTZOffsetInSeconds(tzID),
+          timestamp.getNanos());
+      return true;
+    }
+    return tryConvertToGMT(
+        timestamp,
+        *tz::locateZone(tzID),
+        nullOnNonexistentLocalTime || tzID == 1980);
+  }
+
+  // Calculate china/shanghai unix-timestamp. Return false if the local time is
+  // in a DST gap and should become NULL.
+  bool calculateCnUnixTimestamp(Timestamp& timestamp, Timestamp& result) {
     constexpr int64_t kLastDstEndUtc = 694195200; // 1992-01-01 local
     constexpr int64_t kMidCenturyStartUtc = -631180800; // 1950-01-01 local
     constexpr int64_t kMidCenturyEndUtc = 504892800; // 1986-01-01 local
@@ -146,11 +209,11 @@ struct UnixTimestampFunctionBase {
     if (timestamp.getSeconds() > kMidCenturyEndUtc &&
         timestamp.getSeconds() < kLastDstEndUtc) {
       if (sessionTzID_.has_value()) {
-        timestamp.toGMT(sessionTzID_.value());
-        return timestamp;
+        result = timestamp;
+        return tryConvertToGMT(result, sessionTzID_.value(), true);
       } else if (sessionTimeZone_ != nullptr) {
-        timestamp.toGMT(*sessionTimeZone_);
-        return timestamp;
+        result = timestamp;
+        return tryConvertToGMT(result, *sessionTimeZone_, true);
       }
     }
     // STDOFF fast paths for pure-CST windows (no DST, no LMT):
@@ -160,10 +223,12 @@ struct UnixTimestampFunctionBase {
     const int64_t utcSeconds =
         timestamp.getSeconds() - sessionTzOffsetInSeconds_;
     if (utcSeconds >= kLastDstEndUtc) {
-      return Timestamp(utcSeconds, timestamp.getNanos());
+      result = Timestamp(utcSeconds, timestamp.getNanos());
+      return true;
     }
     if (utcSeconds >= kMidCenturyStartUtc && utcSeconds < kMidCenturyEndUtc) {
-      return Timestamp(utcSeconds, timestamp.getNanos());
+      result = Timestamp(utcSeconds, timestamp.getNanos());
+      return true;
     }
 
     // Route through tzdata for every Shanghai regime (LMT, CST, and DST in
@@ -172,9 +237,9 @@ struct UnixTimestampFunctionBase {
     if (sessionTimeZone_ != nullptr) {
       const auto adjusted = sessionTimeZone_->correct_nonexistent_time(
           std::chrono::seconds(timestamp.getSeconds()));
-      timestamp = Timestamp(adjusted.count(), timestamp.getNanos());
-      timestamp.toGMT(*sessionTimeZone_);
-      return timestamp;
+      result = Timestamp(adjusted.count(), timestamp.getNanos());
+      result.toGMT(*sessionTimeZone_);
+      return true;
     }
     if (sessionTzID_.has_value()) {
       const auto* zone = tz::locateZone(
@@ -182,42 +247,68 @@ struct UnixTimestampFunctionBase {
       if (zone != nullptr) {
         const auto adjusted = zone->correct_nonexistent_time(
             std::chrono::seconds(timestamp.getSeconds()));
-        timestamp = Timestamp(adjusted.count(), timestamp.getNanos());
-        timestamp.toGMT(*zone);
+        result = Timestamp(adjusted.count(), timestamp.getNanos());
+        result.toGMT(*zone);
       } else {
-        timestamp.toGMT(sessionTzID_.value());
+        result = timestamp;
+        result.toGMT(sessionTzID_.value());
       }
-      return timestamp;
+      return true;
     }
 
     if (timestamp.getSeconds() - sessionTzOffsetInSeconds_ < kShseparator) {
-      return Timestamp(
+      result = Timestamp(
           timestamp.getSeconds() - sessionTzOffsetInSeconds_ + kShSpecOffset,
           timestamp.getNanos());
     } else {
-      return Timestamp(
+      result = Timestamp(
           timestamp.getSeconds() - sessionTzOffsetInSeconds_,
           timestamp.getNanos());
     }
+    return true;
+  }
 
-    BOLT_UNREACHABLE();
+  bool getTimestampResultInGMT(DateTimeResultValue& dtr, Timestamp& result) {
+    if (hasNegativeYear(dtr)) {
+      return false;
+    }
+
+    if (dtr.timezoneId != -1) {
+      // Use parsed timezone
+      if (!tryConvertToGMT(dtr.timestamp, dtr.timezoneId, false)) {
+        return false;
+      }
+      result = dtr.timestamp;
+    } else if (this->isShanghai) {
+      return calculateCnUnixTimestamp(dtr.timestamp, result);
+    } else if (sessionTimeZone_ != nullptr) {
+      if (!tryConvertToGMT(dtr.timestamp, *sessionTimeZone_, false)) {
+        return false;
+      }
+      result = dtr.timestamp;
+    } else {
+      result = Timestamp(
+          dtr.timestamp.getSeconds() - sessionTzOffsetInSeconds_,
+          dtr.timestamp.getNanos());
+    }
+
+    return true;
+  }
+
+  bool getResultInGMT(DateTimeResultValue& dtr, int64_t& result) {
+    Timestamp timestampResult;
+    if (!getTimestampResultInGMT(dtr, timestampResult)) {
+      return false;
+    }
+    result = timestampResult.getSeconds();
+    return true;
   }
 
   int64_t getResultInGMT(DateTimeResultValue& dtr) {
     int64_t result = 0;
-    if (dtr.timezoneId != -1) {
-      // Use parsed timezone
-      dtr.timestamp.toGMT(dtr.timezoneId);
-      result = dtr.timestamp.getSeconds();
-    } else if (this->isShanghai) {
-      return calculateCnUnixTimestamp(dtr.timestamp).getSeconds();
-    } else if (sessionTimeZone_ != nullptr) {
-      dtr.timestamp.toGMT(*sessionTimeZone_);
-      result = dtr.timestamp.getSeconds();
-    } else {
-      result = dtr.timestamp.getSeconds() - sessionTzOffsetInSeconds_;
-    }
-
+    BOLT_USER_CHECK(
+        getResultInGMT(dtr, result),
+        "Timestamp does not exist in the specified time zone");
     return result;
   }
   int64_t getResultInGMT(DateTimeResultValue&& dtr) {
@@ -225,35 +316,35 @@ struct UnixTimestampFunctionBase {
   }
 
   Timestamp getTimestampResultInGMT(DateTimeResultValue& dtr) {
-    if (dtr.timezoneId != -1) {
-      // Use parsed timezone
-      dtr.timestamp.toGMT(dtr.timezoneId);
-    } else if (this->isShanghai) {
-      return calculateCnUnixTimestamp(dtr.timestamp);
-    } else if (sessionTimeZone_ != nullptr) {
-      dtr.timestamp.toGMT(*sessionTimeZone_);
-    } else {
-      return Timestamp(
-          dtr.timestamp.getSeconds() - sessionTzOffsetInSeconds_,
-          dtr.timestamp.getNanos());
-    }
-
-    return dtr.timestamp;
+    Timestamp result;
+    BOLT_USER_CHECK(
+        getTimestampResultInGMT(dtr, result),
+        "Timestamp does not exist in the specified time zone");
+    return result;
   }
 
-  Timestamp getTimestampResultInGMT(Timestamp& timestamp) {
+  bool getTimestampResultInGMT(Timestamp& timestamp, Timestamp& result) {
     if (this->isShanghai) {
-      return calculateCnUnixTimestamp(timestamp);
+      return calculateCnUnixTimestamp(timestamp, result);
     }
 
     if (sessionTimeZone_ == nullptr) {
-      return Timestamp(
+      result = Timestamp(
           timestamp.getSeconds() - sessionTzOffsetInSeconds_,
           timestamp.getNanos());
+      return true;
     }
 
-    timestamp.toGMT(*sessionTimeZone_);
-    return timestamp;
+    result = timestamp;
+    return tryConvertToGMT(result, *sessionTimeZone_, this->isShanghai);
+  }
+
+  Timestamp getTimestampResultInGMT(Timestamp& timestamp) {
+    Timestamp result;
+    BOLT_USER_CHECK(
+        getTimestampResultInGMT(timestamp, result),
+        "Timestamp does not exist in the specified time zone");
+    return result;
   }
 
   Timestamp getTimestampResultInGMT(Timestamp&& timestamp) {
@@ -395,8 +486,7 @@ struct UnixTimestampParseFunction : public UnixTimestampFunctionBase<T> {
     if (dateTimeResult.hasError()) {
       return false;
     }
-    result = this->getResultInGMT(dateTimeResult.value());
-    return true;
+    return this->getResultInGMT(dateTimeResult.value(), result);
   }
 
   FOLLY_ALWAYS_INLINE void call(int64_t& result, const arg_type<Date>& input) {
@@ -478,8 +568,7 @@ struct UnixTimestampParseWithFormatFunction
       }
       return false;
     }
-    result = this->getResultInGMT(dateTimeResult.value());
-    return true;
+    return this->getResultInGMT(dateTimeResult.value(), result);
   }
 
   FOLLY_ALWAYS_INLINE bool call(
@@ -527,11 +616,7 @@ struct UnixTimestampParseWithFormatFunction
       return false;
     }
 
-    auto timestamp = dateTimeResult.value();
-
-    result = this->getTimestampResultInGMT(dateTimeResult.value());
-
-    return true;
+    return this->getTimestampResultInGMT(dateTimeResult.value(), result);
   }
 
   // get_timestamp(date, format)
