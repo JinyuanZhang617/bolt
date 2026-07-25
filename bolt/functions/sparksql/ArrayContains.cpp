@@ -1,5 +1,5 @@
 /*
- * Copyright (c) ByteDance Ltd. and/or its affiliates
+ * Copyright (c) ByteDance Ltd. and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,16 @@
  * limitations under the License.
  */
 
-#pragma once
-
-#include <memory>
-#include <vector>
-#include "bolt/core/Expressions.h"
-#include "bolt/expression/FunctionSignature.h"
+#include "bolt/functions/prestosql/ArrayContains.h"
 #include "bolt/expression/VectorFunction.h"
+
 namespace bytedance::bolt::functions {
 
-std::vector<std::shared_ptr<exec::FunctionSignature>> arrayContainsSignatures();
-
-std::unique_ptr<exec::VectorFunction> createArrayContainsFunction(
-    bool throwOnNestedNull);
-
-/// array_contains(array, element) -> boolean => element in array if array is a
-/// constant
-
-core::TypedExprPtr rewriteArrayContains2In(
-    const std::string& prefix,
-    const core::TypedExprPtr& expr);
+// Spark array_contains uses null-safe equality for complex elements, e.g.
+// row(1, null) matches row(1, null) and does not match row(1, 2).
+BOLT_DECLARE_VECTOR_FUNCTION(
+    udf_spark_array_contains,
+    arrayContainsSignatures(),
+    createArrayContainsFunction(false));
 
 } // namespace bytedance::bolt::functions

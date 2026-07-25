@@ -308,17 +308,20 @@ core::TypedExprPtr rewriteArrayContains2In(
   return nullptr;
 }
 
+std::vector<std::shared_ptr<exec::FunctionSignature>>
+arrayContainsSignatures() {
+  return ArrayContainsFunction::signatures();
+}
+
+std::unique_ptr<exec::VectorFunction> createArrayContainsFunction(
+    bool throwOnNestedNull) {
+  return std::make_unique<ArrayContainsFunction>(throwOnNestedNull);
+}
+
 BOLT_DECLARE_VECTOR_FUNCTION(
     udf_array_contains,
     ArrayContainsFunction::signatures(),
     std::make_unique<ArrayContainsFunction>(true));
-
-// Spark array_contains uses null-safe equality for complex elements, e.g.
-// row(1, null) matches row(1, null) and does not match row(1, 2).
-BOLT_DECLARE_VECTOR_FUNCTION(
-    udf_spark_array_contains,
-    ArrayContainsFunction::signatures(),
-    std::make_unique<ArrayContainsFunction>(false));
 
 // Internal function only used for testing. This function allows the array to
 // have null elements and considers null as a value, i.e., null == null.
