@@ -780,6 +780,46 @@ TEST_F(SparkSqlDateTimeFunctionsTest, unixTimestampWithExplicitOffset) {
       });
 }
 
+TEST_F(SparkSqlDateTimeFunctionsTest, unixTimestampSparkMicrosOverflow) {
+  const auto unixTimestamp = [&](std::optional<StringView> dateStr,
+                                 std::optional<StringView> formatStr) {
+    return evaluateOnce<int64_t>("unix_timestamp(c0, c1)", dateStr, formatStr);
+  };
+  const auto getTimestamp = [&](std::optional<StringView> dateStr,
+                                std::optional<StringView> formatStr) {
+    return evaluateOnce<Timestamp>("get_timestamp(c0, c1)", dateStr, formatStr);
+  };
+
+  setPolicyAndTimeZone("corrected", "UTC");
+  EXPECT_EQ(
+      9223372036854,
+      unixTimestamp("294247-01-10 04:00:54", "yyyy-MM-dd HH:mm:ss"));
+  EXPECT_EQ(
+      9223372008054,
+      unixTimestamp("294247-01-10 04:00:54 +0800", "yyyy-MM-dd HH:mm:ss Z"));
+  BOLT_ASSERT_THROW(
+      unixTimestamp("294247-01-10 04:00:54 -0800", "yyyy-MM-dd HH:mm:ss Z"),
+      "long overflow");
+
+  EXPECT_EQ(
+      Timestamp(9223372036854, 0),
+      getTimestamp("294247-01-10 04:00:54", "yyyy-MM-dd HH:mm:ss"));
+  EXPECT_EQ(
+      Timestamp(9223372008054, 0),
+      getTimestamp("294247-01-10 04:00:54 +0800", "yyyy-MM-dd HH:mm:ss Z"));
+  BOLT_ASSERT_THROW(
+      getTimestamp("294247-01-10 04:00:54 -0800", "yyyy-MM-dd HH:mm:ss Z"),
+      "long overflow");
+
+  setPolicyAndTimeZone("corrected", "America/Los_Angeles");
+  BOLT_ASSERT_THROW(
+      unixTimestamp("294247-01-10 04:00:54", "yyyy-MM-dd HH:mm:ss"),
+      "long overflow");
+  BOLT_ASSERT_THROW(
+      getTimestamp("294247-01-10 04:00:54", "yyyy-MM-dd HH:mm:ss"),
+      "long overflow");
+}
+
 TEST_F(SparkSqlDateTimeFunctionsTest, unixTimestampOutOfRangeYears) {
   setPolicyAndTimeZone("corrected", "Asia/Shanghai");
 

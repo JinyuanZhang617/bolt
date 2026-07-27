@@ -143,21 +143,55 @@ struct UnixTimestampFunctionBase {
     return result.timestamp.getDays() < kFirstNonNegativeYearDay;
   }
 
+  void checkSparkTimestampMicrosInRange(int64_t seconds, uint64_t nanos) {
+    constexpr __int128 kMicrosInSecond = 1'000'000;
+    constexpr __int128 kSparkMinTimestampMicros =
+        std::numeric_limits<int64_t>::min();
+    constexpr __int128 kSparkMaxTimestampMicros =
+        std::numeric_limits<int64_t>::max();
+    const auto micros = static_cast<__int128>(seconds) * kMicrosInSecond +
+        static_cast<__int128>(nanos / 1'000);
+    BOLT_USER_CHECK(
+        micros >= kSparkMinTimestampMicros &&
+            micros <= kSparkMaxTimestampMicros,
+        "long overflow");
+  }
+
+  bool tryAssignConvertedTimestamp(Timestamp& timestamp, int64_t seconds) {
+    checkSparkTimestampMicrosInRange(seconds, timestamp.getNanos());
+    if (seconds < Timestamp::kMinSeconds || seconds > Timestamp::kMaxSeconds) {
+      return false;
+    }
+    timestamp = Timestamp(seconds, timestamp.getNanos());
+    return true;
+  }
+
+  bool trySubtractOffsetAndAssign(Timestamp& timestamp, int64_t offsetSeconds) {
+    int64_t seconds;
+    BOLT_USER_CHECK(
+        !__builtin_sub_overflow(
+            timestamp.getSeconds(), offsetSeconds, &seconds),
+        "long overflow");
+    return tryAssignConvertedTimestamp(timestamp, seconds);
+  }
+
   bool tryConvertToGMT(
       Timestamp& timestamp,
       const tz::TimeZone& zone,
       bool nullOnNonexistentLocalTime) {
+    // -32767-01-01 00:00:00. date::time_zone conversion aborts below this
+    // bound, so keep one extra day for timezone adjustment safety.
+    constexpr int64_t kMinSecondsSupportedByTimeZoneAdjustment =
+        -1096193779200l;
     constexpr int64_t kMinSecondsForTimeZoneAdjustment =
-        -1096193779200l + 86400l;
+        kMinSecondsSupportedByTimeZoneAdjustment + Timestamp::kSecondsInDay;
     if (timestamp.getSeconds() < kMinSecondsForTimeZoneAdjustment ||
         timestamp.getSeconds() > Timestamp::kMaxSeconds) {
       return false;
     }
 
     if (const auto offset = zone.offset()) {
-      timestamp = Timestamp(
-          timestamp.getSeconds() - offset->count() * 60, timestamp.getNanos());
-      return true;
+      return trySubtractOffsetAndAssign(timestamp, offset->count() * 60);
     }
 
     ::date::local_time<std::chrono::seconds> localTime{
@@ -172,12 +206,7 @@ struct UnixTimestampFunctionBase {
     // forward by the gap duration. This is equivalent to converting using the
     // offset before the transition. For ambiguous timestamps, Spark picks the
     // earlier instant, which also uses the first offset.
-    auto sysTime =
-        ::date::sys_time<std::chrono::seconds>{localTime.time_since_epoch()} -
-        info.first.offset;
-    timestamp =
-        Timestamp(sysTime.time_since_epoch().count(), timestamp.getNanos());
-    return true;
+    return trySubtractOffsetAndAssign(timestamp, info.first.offset.count());
   }
 
   bool tryConvertToGMT(
@@ -185,13 +214,11 @@ struct UnixTimestampFunctionBase {
       int16_t tzID,
       bool nullOnNonexistentLocalTime) {
     if (tzID == 0) {
-      return true;
+      return tryAssignConvertedTimestamp(timestamp, timestamp.getSeconds());
     }
     if (tzID <= 1680) {
-      timestamp = Timestamp(
-          timestamp.getSeconds() - getPrestoTZOffsetInSeconds(tzID),
-          timestamp.getNanos());
-      return true;
+      return trySubtractOffsetAndAssign(
+          timestamp, getPrestoTZOffsetInSeconds(tzID));
     }
     return tryConvertToGMT(
         timestamp,
@@ -220,15 +247,18 @@ struct UnixTimestampFunctionBase {
     //   post-1991   (>= 1992-01-01 local)
     //   mid-century (1950-01-01 .. 1985-12-31 local)
     // Other eras fall through to tzdata + correct_nonexistent_time.
-    const int64_t utcSeconds =
-        timestamp.getSeconds() - sessionTzOffsetInSeconds_;
+    int64_t utcSeconds;
+    BOLT_USER_CHECK(
+        !__builtin_sub_overflow(
+            timestamp.getSeconds(), sessionTzOffsetInSeconds_, &utcSeconds),
+        "long overflow");
     if (utcSeconds >= kLastDstEndUtc) {
-      result = Timestamp(utcSeconds, timestamp.getNanos());
-      return true;
+      result = timestamp;
+      return tryAssignConvertedTimestamp(result, utcSeconds);
     }
     if (utcSeconds >= kMidCenturyStartUtc && utcSeconds < kMidCenturyEndUtc) {
-      result = Timestamp(utcSeconds, timestamp.getNanos());
-      return true;
+      result = timestamp;
+      return tryAssignConvertedTimestamp(result, utcSeconds);
     }
 
     // Route through tzdata for every Shanghai regime (LMT, CST, and DST in
@@ -256,16 +286,16 @@ struct UnixTimestampFunctionBase {
       return true;
     }
 
-    if (timestamp.getSeconds() - sessionTzOffsetInSeconds_ < kShseparator) {
-      result = Timestamp(
-          timestamp.getSeconds() - sessionTzOffsetInSeconds_ + kShSpecOffset,
-          timestamp.getNanos());
+    if (utcSeconds < kShseparator) {
+      BOLT_USER_CHECK(
+          !__builtin_add_overflow(utcSeconds, kShSpecOffset, &utcSeconds),
+          "long overflow");
+      result = timestamp;
+      return tryAssignConvertedTimestamp(result, utcSeconds);
     } else {
-      result = Timestamp(
-          timestamp.getSeconds() - sessionTzOffsetInSeconds_,
-          timestamp.getNanos());
+      result = timestamp;
+      return tryAssignConvertedTimestamp(result, utcSeconds);
     }
-    return true;
   }
 
   bool getTimestampResultInGMT(DateTimeResultValue& dtr, Timestamp& result) {
@@ -287,9 +317,8 @@ struct UnixTimestampFunctionBase {
       }
       result = dtr.timestamp;
     } else {
-      result = Timestamp(
-          dtr.timestamp.getSeconds() - sessionTzOffsetInSeconds_,
-          dtr.timestamp.getNanos());
+      result = dtr.timestamp;
+      return trySubtractOffsetAndAssign(result, sessionTzOffsetInSeconds_);
     }
 
     return true;
@@ -329,10 +358,8 @@ struct UnixTimestampFunctionBase {
     }
 
     if (sessionTimeZone_ == nullptr) {
-      result = Timestamp(
-          timestamp.getSeconds() - sessionTzOffsetInSeconds_,
-          timestamp.getNanos());
-      return true;
+      result = timestamp;
+      return trySubtractOffsetAndAssign(result, sessionTzOffsetInSeconds_);
     }
 
     result = timestamp;
