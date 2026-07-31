@@ -32,12 +32,15 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <numeric>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "arrow/array/builder_binary.h"
 #include "arrow/buffer.h"
 #include "arrow/io/buffered.h"
 #include "arrow/testing/gtest_util.h"
@@ -47,6 +50,8 @@
 #include "bolt/dwio/parquet/arrow/ColumnWriter.h"
 #include "bolt/dwio/parquet/arrow/Encoding.h"
 #include "bolt/dwio/parquet/arrow/EncodingInternal.h"
+#include "bolt/dwio/parquet/arrow/EncryptionInternal.h"
+#include "bolt/dwio/parquet/arrow/FileEncryptorInternal.h"
 #include "bolt/dwio/parquet/arrow/FileWriter.h"
 #include "bolt/dwio/parquet/arrow/Metadata.h"
 #include "bolt/dwio/parquet/arrow/PageBufferArena.h"
@@ -991,6 +996,385 @@ TEST(TestColumnWriter, RepeatedListsUpdateSpacedBug) {
       0,
       values_data);
   writer->Close();
+}
+
+class PageWriterSizeGuardTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    node_ = std::static_pointer_cast<GroupNode>(GroupNode::Make(
+        "schema",
+        Repetition::REQUIRED,
+        {schema::ByteArray("value", Repetition::REQUIRED)}));
+    schemaDescriptor_.Init(node_);
+    properties_ = WriterProperties::Builder().disable_dictionary()->build();
+    metadata_ = ColumnChunkMetaDataBuilder::Make(
+        properties_, schemaDescriptor_.Column(0));
+    sink_ = CreateOutputStream();
+    pageWriter_ = PageWriter::Open(
+        sink_,
+        Compression::UNCOMPRESSED,
+        Codec::UseDefaultCompressionLevel(),
+        metadata_.get());
+  }
+
+  template <typename Callback>
+  void expectSizeError(Callback&& callback, const std::string& expectedText) {
+    try {
+      callback();
+      FAIL() << "Expected ParquetException containing: " << expectedText;
+    } catch (const ParquetException& error) {
+      EXPECT_NE(std::string(error.what()).find(expectedText), std::string::npos)
+          << error.what();
+    }
+  }
+
+  void enableDataEncryption() {
+    aesEncryptor_ = std::make_unique<encryption::AesEncryptor>(
+        ParquetCipher::AES_GCM_V1,
+        /*key_len=*/16,
+        /*metadata=*/false);
+    auto dataEncryptor = std::make_shared<Encryptor>(
+        aesEncryptor_.get(),
+        std::string(16, 'k'),
+        "file-aad",
+        "page-aad",
+        ::arrow::default_memory_pool());
+    pageWriter_ = PageWriter::Open(
+        sink_,
+        Compression::UNCOMPRESSED,
+        metadata_.get(),
+        /*row_group_ordinal=*/0,
+        /*column_chunk_ordinal=*/0,
+        ::arrow::default_memory_pool(),
+        /*buffered_row_group=*/false,
+        /*header_encryptor=*/nullptr,
+        std::move(dataEncryptor));
+  }
+
+  std::shared_ptr<GroupNode> node_;
+  SchemaDescriptor schemaDescriptor_;
+  std::shared_ptr<WriterProperties> properties_;
+  std::unique_ptr<ColumnChunkMetaDataBuilder> metadata_;
+  std::shared_ptr<::arrow::io::BufferOutputStream> sink_;
+  std::unique_ptr<encryption::AesEncryptor> aesEncryptor_;
+  std::unique_ptr<PageWriter> pageWriter_;
+};
+
+TEST_F(PageWriterSizeGuardTest, rejectsUncompressedDataPageSizeOverflow) {
+  static const uint8_t kDummyData = 0;
+  auto buffer = std::make_shared<::arrow::Buffer>(&kDummyData, 1);
+  constexpr int64_t kTooLarge =
+      static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1;
+  auto page = std::make_unique<DataPageV1>(
+      buffer, 1, Encoding::PLAIN, Encoding::RLE, Encoding::RLE, kTooLarge);
+
+  expectSizeError(
+      [&]() { pageWriter_->WriteDataPage(std::move(page)); },
+      "Uncompressed data page size");
+}
+
+TEST_F(PageWriterSizeGuardTest, rejectsCompressedDataPageSizeOverflow) {
+  static const uint8_t kDummyData = 0;
+  constexpr int64_t kTooLarge =
+      static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1;
+  auto buffer = std::make_shared<::arrow::Buffer>(&kDummyData, kTooLarge);
+  auto page = std::make_unique<DataPageV1>(
+      buffer, 1, Encoding::PLAIN, Encoding::RLE, Encoding::RLE, 1);
+
+  expectSizeError(
+      [&]() { pageWriter_->WriteDataPage(std::move(page)); },
+      "Compressed data page size");
+}
+
+TEST_F(PageWriterSizeGuardTest, rejectsDictionaryPageSizeBeforeNarrowing) {
+  static const uint8_t kDummyData = 0;
+  constexpr int64_t kTooLarge =
+      static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1;
+  auto buffer = std::make_shared<::arrow::Buffer>(&kDummyData, kTooLarge);
+  auto page =
+      std::make_unique<DictionaryPage>(buffer, 1, Encoding::PLAIN, false);
+
+  expectSizeError(
+      [&]() { pageWriter_->WriteDictionaryPage(std::move(page)); },
+      "Uncompressed dictionary page size");
+}
+
+TEST_F(PageWriterSizeGuardTest, rejectsEncryptedDataPageSizeOverflow) {
+  enableDataEncryption();
+  static const uint8_t kDummyData = 0;
+  constexpr int64_t kLargestInt32 = std::numeric_limits<int32_t>::max();
+  auto buffer = std::make_shared<::arrow::Buffer>(&kDummyData, kLargestInt32);
+  auto page = std::make_unique<DataPageV1>(
+      buffer, 1, Encoding::PLAIN, Encoding::RLE, Encoding::RLE, 1);
+
+  expectSizeError(
+      [&]() { pageWriter_->WriteDataPage(std::move(page)); },
+      "Encrypted data page size");
+}
+
+TEST_F(PageWriterSizeGuardTest, rejectsEncryptedDictionaryPageSizeOverflow) {
+  enableDataEncryption();
+  static const uint8_t kDummyData = 0;
+  constexpr int64_t kLargestInt32 = std::numeric_limits<int32_t>::max();
+  auto buffer = std::make_shared<::arrow::Buffer>(&kDummyData, kLargestInt32);
+  auto page =
+      std::make_unique<DictionaryPage>(buffer, 1, Encoding::PLAIN, false);
+
+  expectSizeError(
+      [&]() { pageWriter_->WriteDictionaryPage(std::move(page)); },
+      "Encrypted dictionary page size");
+}
+
+class ByteArraySplitterPageHeaderLimitTest
+    : public ::testing::TestWithParam<bool> {};
+
+TEST_P(ByteArraySplitterPageHeaderLimitTest, SplitsBeforeHardLimit) {
+  const bool dictionary_enabled = GetParam();
+  auto node = std::static_pointer_cast<GroupNode>(GroupNode::Make(
+      "schema",
+      Repetition::REQUIRED,
+      {schema::ByteArray("value", Repetition::REQUIRED)}));
+  SchemaDescriptor schema_descriptor;
+  schema_descriptor.Init(node);
+  WriterProperties::Builder properties_builder;
+  properties_builder.data_pagesize(1024)->dictionary_pagesize_limit(1024);
+  if (dictionary_enabled) {
+    properties_builder.enable_dictionary();
+  } else {
+    properties_builder.disable_dictionary();
+  }
+  auto properties = properties_builder.build();
+  auto metadata =
+      ColumnChunkMetaDataBuilder::Make(properties, schema_descriptor.Column(0));
+  auto sink = CreateOutputStream();
+  auto pager = PageWriter::Open(
+      sink,
+      Compression::UNCOMPRESSED,
+      Codec::UseDefaultCompressionLevel(),
+      metadata.get());
+
+  constexpr int64_t kPageHeaderSizeLimit = 64;
+  auto writer = ColumnWriter::MakeForTest(
+      metadata.get(), std::move(pager), properties.get(), kPageHeaderSizeLimit);
+
+  ::arrow::StringBuilder builder;
+  constexpr int64_t kNumValues = 4;
+  const int64_t value_length = dictionary_enabled ? 28 : 40;
+  for (int64_t i = 0; i < kNumValues; ++i) {
+    ASSERT_OK(builder.Append(std::string(value_length, 'a' + i)));
+  }
+  ASSERT_OK_AND_ASSIGN(auto array, builder.Finish());
+  auto arrow_properties = default_arrow_writer_properties();
+  ArrowWriteContext context(
+      ::arrow::default_memory_pool(), arrow_properties.get());
+
+  ASSERT_OK(writer->WriteArrow(
+      nullptr, nullptr, array->length(), *array, &context, false));
+  writer->Close();
+
+  ASSERT_OK_AND_ASSIGN(auto buffer, sink->Finish());
+  auto page_reader = PageReader::Open(
+      std::make_shared<::arrow::io::BufferReader>(buffer),
+      kNumValues,
+      Compression::UNCOMPRESSED,
+      default_reader_properties());
+  int64_t num_values = 0;
+  bool saw_dictionary_page = false;
+  bool saw_plain_page = false;
+  while (auto page = page_reader->NextPage()) {
+    EXPECT_LE(page->size(), kPageHeaderSizeLimit);
+    if (page->type() == PageType::DICTIONARY_PAGE) {
+      saw_dictionary_page = true;
+      continue;
+    }
+    ASSERT_EQ(PageType::DATA_PAGE, page->type());
+    auto data_page = std::static_pointer_cast<DataPageV1>(page);
+    EXPECT_LE(data_page->uncompressed_size(), kPageHeaderSizeLimit);
+    saw_plain_page |= data_page->encoding() == Encoding::PLAIN;
+    num_values += data_page->num_values();
+  }
+  EXPECT_EQ(kNumValues, num_values);
+  EXPECT_EQ(dictionary_enabled, saw_dictionary_page);
+  EXPECT_TRUE(saw_plain_page);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Encoding,
+    ByteArraySplitterPageHeaderLimitTest,
+    ::testing::Values(false, true),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "Dictionary" : "Plain";
+    });
+
+class ByteArrayDeltaPageTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    node_ = std::static_pointer_cast<GroupNode>(GroupNode::Make(
+        "schema",
+        Repetition::REQUIRED,
+        {schema::ByteArray("value", Repetition::REQUIRED)}));
+    schema_descriptor_.Init(node_);
+  }
+
+  std::shared_ptr<Buffer> write_arrow_array(
+      const std::shared_ptr<::arrow::Array>& array,
+      Encoding::type encoding,
+      int64_t data_page_size,
+      int64_t write_batch_size) {
+    WriterProperties::Builder properties_builder;
+    properties_builder.disable_dictionary()
+        ->encoding(encoding)
+        ->data_pagesize(data_page_size)
+        ->write_batch_size(write_batch_size);
+    auto properties = properties_builder.build();
+    auto metadata = ColumnChunkMetaDataBuilder::Make(
+        properties, schema_descriptor_.Column(0));
+    auto sink = CreateOutputStream();
+    auto pager = PageWriter::Open(
+        sink,
+        Compression::UNCOMPRESSED,
+        Codec::UseDefaultCompressionLevel(),
+        metadata.get());
+    auto writer =
+        ColumnWriter::Make(metadata.get(), std::move(pager), properties.get());
+    auto arrow_properties = default_arrow_writer_properties();
+    ArrowWriteContext context(
+        ::arrow::default_memory_pool(), arrow_properties.get());
+
+    auto status = writer->WriteArrow(
+        nullptr, nullptr, array->length(), *array, &context, false);
+    EXPECT_TRUE(status.ok()) << status.ToString();
+    if (!status.ok()) {
+      return nullptr;
+    }
+    writer->Close();
+    EXPECT_OK_AND_ASSIGN(auto buffer, sink->Finish());
+    return buffer;
+  }
+
+  std::vector<int64_t> data_page_value_counts(
+      const std::shared_ptr<Buffer>& buffer,
+      int64_t num_values,
+      Encoding::type encoding) {
+    auto page_reader = PageReader::Open(
+        std::make_shared<::arrow::io::BufferReader>(buffer),
+        num_values,
+        Compression::UNCOMPRESSED,
+        default_reader_properties());
+    std::vector<int64_t> counts;
+    while (auto page = page_reader->NextPage()) {
+      if (page->type() != PageType::DATA_PAGE) {
+        ADD_FAILURE() << "Unexpected non-data page";
+        continue;
+      }
+      auto data_page = std::static_pointer_cast<DataPageV1>(page);
+      EXPECT_EQ(encoding, data_page->encoding());
+      counts.push_back(data_page->num_values());
+    }
+    return counts;
+  }
+
+  void expect_round_trip(
+      const std::shared_ptr<Buffer>& buffer,
+      const std::vector<std::string>& expected) {
+    auto page_reader = PageReader::Open(
+        std::make_shared<::arrow::io::BufferReader>(buffer),
+        expected.size(),
+        Compression::UNCOMPRESSED,
+        default_reader_properties());
+    auto reader = std::static_pointer_cast<TypedColumnReader<ByteArrayType>>(
+        ColumnReader::Make(
+            schema_descriptor_.Column(0), std::move(page_reader)));
+    std::vector<ByteArray> batch(expected.size());
+    std::vector<std::string> actual(expected.size());
+    int64_t total_read = 0;
+    while (total_read < static_cast<int64_t>(expected.size())) {
+      int64_t values_read = 0;
+      reader->ReadBatch(
+          expected.size() - total_read,
+          nullptr,
+          nullptr,
+          batch.data(),
+          &values_read);
+      ASSERT_GT(values_read, 0);
+      for (int64_t i = 0; i < values_read; ++i) {
+        actual[total_read + i] = std::string_view(batch[i]);
+      }
+      total_read += values_read;
+    }
+    EXPECT_EQ(expected, actual);
+  }
+
+  std::shared_ptr<GroupNode> node_;
+  SchemaDescriptor schema_descriptor_;
+};
+
+TEST_F(ByteArrayDeltaPageTest, DeltaByteArrayUsesActualSizeForPageFlush) {
+  std::vector<std::string> values(64, std::string(112, 'a'));
+  ::arrow::StringBuilder builder;
+  for (const auto& value : values) {
+    ASSERT_OK(builder.Append(value));
+  }
+  ASSERT_OK_AND_ASSIGN(auto array, builder.Finish());
+
+  auto buffer = write_arrow_array(
+      array,
+      Encoding::DELTA_BYTE_ARRAY,
+      /*data_page_size=*/1024,
+      /*write_batch_size=*/8);
+  ASSERT_NE(nullptr, buffer);
+
+  EXPECT_EQ(
+      std::vector<int64_t>({64}),
+      data_page_value_counts(
+          buffer, values.size(), Encoding::DELTA_BYTE_ARRAY));
+  expect_round_trip(buffer, values);
+}
+
+TEST_F(ByteArrayDeltaPageTest, DeltaLengthAccountsForArrowPayload) {
+  std::vector<std::string> values;
+  ::arrow::StringBuilder builder;
+  for (int i = 0; i < 12; ++i) {
+    values.push_back(std::string(40, static_cast<char>('a' + i)));
+    ASSERT_OK(builder.Append(values.back()));
+  }
+  ASSERT_OK_AND_ASSIGN(auto array, builder.Finish());
+
+  auto buffer = write_arrow_array(
+      array,
+      Encoding::DELTA_LENGTH_BYTE_ARRAY,
+      /*data_page_size=*/128,
+      /*write_batch_size=*/4);
+  ASSERT_NE(nullptr, buffer);
+
+  EXPECT_EQ(
+      std::vector<int64_t>({4, 4, 4}),
+      data_page_value_counts(
+          buffer, values.size(), Encoding::DELTA_LENGTH_BYTE_ARRAY));
+  expect_round_trip(buffer, values);
+}
+
+TEST_F(ByteArrayDeltaPageTest, DeltaByteArrayBoundsIncompressibleBatches) {
+  std::vector<std::string> values;
+  ::arrow::StringBuilder builder;
+  for (int i = 0; i < 12; ++i) {
+    values.push_back(std::string(40, static_cast<char>('a' + i)));
+    ASSERT_OK(builder.Append(values.back()));
+  }
+  ASSERT_OK_AND_ASSIGN(auto array, builder.Finish());
+
+  auto buffer = write_arrow_array(
+      array,
+      Encoding::DELTA_BYTE_ARRAY,
+      /*data_page_size=*/128,
+      /*write_batch_size=*/4);
+  ASSERT_NE(nullptr, buffer);
+
+  EXPECT_EQ(
+      std::vector<int64_t>({2, 2, 2, 2, 2, 2}),
+      data_page_value_counts(
+          buffer, values.size(), Encoding::DELTA_BYTE_ARRAY));
+  expect_round_trip(buffer, values);
 }
 
 void GenerateLevels(
