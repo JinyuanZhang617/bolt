@@ -43,6 +43,8 @@
 #include "bolt/expression/TryExpr.h"
 #include "bolt/expression/VectorFunction.h"
 
+#include <glog/logging.h>
+
 #ifdef ENABLE_BOLT_EXPR_JIT
 #include "bolt/jit/expression/ExprJitCompiler.h"
 #endif
@@ -458,6 +460,12 @@ ExprPtr compileRewrittenExpression(
             getConstantInputs(compiledInputs),
             config,
             resultType)) {
+      if (call->name() == "to_json" || call->name() == "spark_to_json") {
+        LOG(INFO) << "[BoltExprFunctionResolution][log by jy] function_name="
+                  << call->name() << ", implementation=vector_function"
+                  << ", input_types=(" << folly::join(", ", inputTypes)
+                  << "), result_type=" << resultType->toString();
+      }
       result = std::make_shared<Expr>(
           resultType,
           std::move(compiledInputs),
@@ -477,6 +485,12 @@ ExprPtr compileRewrittenExpression(
           folly::join(", ", inputTypes));
       auto func = simpleFunctionEntry->createFunction()->createVectorFunction(
           inputTypes, getConstantInputs(compiledInputs), config);
+      if (call->name() == "to_json" || call->name() == "spark_to_json") {
+        LOG(INFO) << "[BoltExprFunctionResolution][log by jy] function_name="
+                  << call->name() << ", implementation=simple_function"
+                  << ", input_types=(" << folly::join(", ", inputTypes)
+                  << "), result_type=" << resultType->toString();
+      }
       result = std::make_shared<Expr>(
           resultType,
           std::move(compiledInputs),

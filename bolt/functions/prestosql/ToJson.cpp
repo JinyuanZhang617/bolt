@@ -17,6 +17,7 @@
 #include "folly/CPortability.h"
 #include "folly/Conv.h"
 #include "folly/json.h"
+#include <glog/logging.h>
 
 #include "bolt/expression/VectorFunction.h"
 #include "bolt/functions/prestosql/types/JsonType.h"
@@ -45,6 +46,9 @@ class ToJsonFunction : public VectorFunction {
          args[0]->typeKind() == TypeKind::MAP ||
          args[0]->typeKind() == TypeKind::ROW),
         "According to spark documents, to_json only support map, array, struct type parameter");
+    LOG(INFO) << "[BoltToJsonExecution][log by jy] implementation=prestosql_vector_to_json"
+              << ", input_type=" << args[0]->type()->toString()
+              << ", selected_rows=" << rows.countSelected();
 
     auto castFactory = std::dynamic_pointer_cast<const JsonCastOperator>(
         JsonCastOperator::get());

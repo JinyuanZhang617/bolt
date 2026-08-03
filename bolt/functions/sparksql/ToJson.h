@@ -33,6 +33,8 @@
 #include <cstring>
 #include <string>
 
+#include <glog/logging.h>
+
 #include "bolt/common/encode/Base64.h"
 #include "bolt/expression/ComplexViewTypes.h"
 #include "bolt/expression/VectorReaders.h"
@@ -540,6 +542,9 @@ struct ToJsonFunction {
       out_type<Varchar>& result,
       const arg_type<Generic<T1>>& input,
       const tz::TimeZone* timeZone) {
+    LOG(INFO) << "[BoltToJsonExecution][log by jy] implementation=sparksql_simple_to_json"
+              << ", input_type=" << input.type()->toString()
+              << ", timezone=" << (timeZone ? timeZone->name() : "<null>");
     std::string res;
     BOLT_DYNAMIC_TYPE_DISPATCH_ALL(
         detail::toJson,
