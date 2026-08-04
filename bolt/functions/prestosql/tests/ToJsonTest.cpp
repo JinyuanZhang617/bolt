@@ -78,6 +78,30 @@ class ToJsonTest : public SparkFunctionBaseTest {
   }
 };
 
+class PrestoToJsonTest
+    : public ::bytedance::bolt::functions::test::FunctionBaseTest {
+ protected:
+  void setQueryTimeZone(const std::string& timeZone) {
+    queryCtx_->testingOverrideConfigUnsafe({
+        {core::QueryConfig::kSessionTimezone, timeZone},
+        {core::QueryConfig::kAdjustTimestampToTimezone, "true"},
+    });
+  }
+};
+
+TEST_F(PrestoToJsonTest, timestampMapKeyKeepsPrestoVectorBehavior) {
+  auto mapVector = makeMapVector<Timestamp, StringView>(
+      {{{Timestamp::fromMicrosNoError(1451606400123456), "v"_sv}}},
+      MAP(TIMESTAMP(), VARCHAR()));
+  auto input = makeRowVector({mapVector});
+  auto expected =
+      makeFlatVector<std::string>({R"({""2016-01-01T00:00:00.123Z"":"v"})"});
+
+  setQueryTimeZone("UTC");
+  auto result = evaluate<SimpleVector<StringView>>("to_json(c0)", input);
+  ::bytedance::bolt::test::assertEqualVectors(expected, result);
+}
+
 TEST_F(ToJsonTest, fromArray) {
   {
     // Tests array of json elements.
@@ -210,7 +234,6 @@ TEST_F(ToJsonTest, fromMap) {
         makeNullableFlatVector<JsonNativeType>(expectedBoolKey, VARCHAR());
     toJsonSimple("to_json(c0)", {mapVector}, expectedVector);
   }
-
 #ifdef SPARK_COMPATIBLE
   // Tests map with short decimal values.
   std::vector<std::vector<Pair<StringView, int64_t>>> maps{

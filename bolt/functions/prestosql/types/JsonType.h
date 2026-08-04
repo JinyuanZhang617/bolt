@@ -70,7 +70,8 @@ class JsonCastOperator : public exec::CastOperator {
       const TypePtr& resultType,
       VectorPtr& result,
       const bool isToJson,
-      const bool isTopLevel) const;
+      const bool isTopLevel,
+      const bool sparkTimestampMapKey = false) const;
 
   void castFrom(
       const BaseVector& input,

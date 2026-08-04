@@ -86,6 +86,7 @@ class TableScanTest : public virtual HiveConnectorTestBase {
   void SetUp() override {
     HiveConnectorTestBase::SetUp();
     functions::sparksql::registerFunctions("spark_");
+    functions::sparksql::registerFunctions("");
   }
 
   static void SetUpTestCase() {
@@ -4936,4 +4937,62 @@ TEST_F(TableScanTest, duplicateFieldProject) {
   AssertQueryBuilder(plan, duckDbQueryRunner_)
       .split(makeHiveConnectorSplit(file->getPath()))
       .assertResults("SELECT id, id FROM tmp WHERE name = 'John'");
+}
+
+TEST_F(TableScanTest, toJsonTimestampMapKeyFromFileScanProject) {
+  // Reproduce Spark native FileScan -> Filter -> Project path for:
+  //   SET spark.sql.session.timeZone = UTC;
+  //   SELECT to_json(map(timestamp_micros(epoch_us), 'v'))
+  //   FROM ... WHERE scenario = 'modern' ORDER BY id;
+  // SparkSQL registers its own vector to_json for the unprefixed one-argument
+  // `to_json` so TIMESTAMP map keys are serialized as epoch micros, matching
+  // Spark Java.
+  auto vector = makeRowVector(
+      {"id", "scenario", "epoch_us"},
+      {
+          makeFlatVector<int32_t>({1, 2, 3}),
+          makeFlatVector<std::string>({"modern", "modern", "modern"}),
+          makeFlatVector<int64_t>(
+              {1451606400000000, 1451606400123000, 1451606400123456}),
+      });
+
+  auto file = TempFilePath::create();
+  writeToFile(file->getPath(), vector);
+
+  auto rowType = asRowType(vector->type());
+  auto filterPlan =
+      PlanBuilder().tableScan(rowType).filter("scenario = 'modern'").planNode();
+
+  auto epochUs =
+      std::make_shared<core::FieldAccessTypedExpr>(BIGINT(), "epoch_us");
+  auto timestampMicros = std::make_shared<core::CallTypedExpr>(
+      TIMESTAMP(),
+      std::vector<core::TypedExprPtr>{epochUs},
+      "timestamp_micros");
+  auto value = std::make_shared<core::ConstantTypedExpr>(
+      VARCHAR(), variant(std::string("v")));
+  auto map = std::make_shared<core::CallTypedExpr>(
+      MAP(TIMESTAMP(), VARCHAR()),
+      std::vector<core::TypedExprPtr>{timestampMicros, value},
+      "map");
+  auto toJson = std::make_shared<core::CallTypedExpr>(
+      VARCHAR(), std::vector<core::TypedExprPtr>{map}, "to_json");
+  auto plan = std::make_shared<core::ProjectNode>(
+      "to_json_project",
+      std::vector<std::string>{"json"},
+      std::vector<core::TypedExprPtr>{toJson},
+      filterPlan);
+
+  auto expected = makeRowVector(
+      {"json"},
+      {makeFlatVector<std::string>(
+          {R"({"1451606400000000":"v"})",
+           R"({"1451606400123000":"v"})",
+           R"({"1451606400123456":"v"})"})});
+
+  AssertQueryBuilder(plan)
+      .config(core::QueryConfig::kSessionTimezone, "UTC")
+      .config(core::QueryConfig::kAdjustTimestampToTimezone, "true")
+      .split(makeHiveConnectorSplit(file->getPath()))
+      .assertResults(expected);
 }

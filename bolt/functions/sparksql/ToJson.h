@@ -33,6 +33,8 @@
 #include <cstring>
 #include <string>
 
+#include <glog/logging.h>
+
 #include "bolt/common/encode/Base64.h"
 #include "bolt/expression/ComplexViewTypes.h"
 #include "bolt/expression/VectorReaders.h"

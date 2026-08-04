@@ -43,6 +43,8 @@
 #include "bolt/expression/TryExpr.h"
 #include "bolt/expression/VectorFunction.h"
 
+#include <glog/logging.h>
+
 #ifdef ENABLE_BOLT_EXPR_JIT
 #include "bolt/jit/expression/ExprJitCompiler.h"
 #endif
