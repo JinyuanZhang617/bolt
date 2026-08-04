@@ -49,6 +49,7 @@ void registerJsonFunctions(const std::string& prefix) {
 
   registerFunction<JsonObjectKeysFunction, Array<Varchar>, Varchar>(
       {prefix + "json_object_keys"});
+  BOLT_REGISTER_VECTOR_FUNCTION(udf_spark_to_json, prefix + "to_json");
   registerFunction<ToJsonFunction, Varchar, Generic<T1>>({prefix + "to_json"});
   registerFunction<ToJsonFunction, Varchar, Generic<T1>, Varchar>(
       {prefix + "to_json"});

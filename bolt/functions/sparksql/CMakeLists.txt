@@ -54,6 +54,7 @@ bolt_add_library(
   SequenceFunction.cpp
   SplitFunctions.cpp
   StringSplitSQL.cpp
+  ToJsonVector.cpp
   String.cpp
   UnscaledValueFunction.cpp
   VariantEncoding.cpp

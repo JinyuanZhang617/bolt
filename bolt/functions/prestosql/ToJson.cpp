@@ -20,6 +20,7 @@
 #include <glog/logging.h>
 
 #include "bolt/expression/VectorFunction.h"
+#include "bolt/functions/prestosql/ToJson.h"
 #include "bolt/functions/prestosql/types/JsonType.h"
 namespace bytedance::bolt::functions {
 
@@ -32,6 +33,9 @@ using bytedance::bolt::exec::VectorFunction;
 
 class ToJsonFunction : public VectorFunction {
  public:
+  explicit ToJsonFunction(bool sparkTimestampMapKey)
+      : sparkTimestampMapKey_(sparkTimestampMapKey) {}
+
   void apply(
       const SelectivityVector& rows,
       std::vector<VectorPtr>& args,
@@ -46,7 +50,9 @@ class ToJsonFunction : public VectorFunction {
          args[0]->typeKind() == TypeKind::MAP ||
          args[0]->typeKind() == TypeKind::ROW),
         "According to spark documents, to_json only support map, array, struct type parameter");
-    LOG(INFO) << "[BoltToJsonExecution][log by jy] implementation=prestosql_vector_to_json"
+    LOG(INFO) << "[BoltToJsonExecution][log by jy] implementation="
+              << (sparkTimestampMapKey_ ? "sparksql_vector_to_json"
+                                        : "prestosql_vector_to_json")
               << ", input_type=" << args[0]->type()->toString()
               << ", selected_rows=" << rows.countSelected();
 
@@ -59,7 +65,8 @@ class ToJsonFunction : public VectorFunction {
         outputType,
         result,
         /*isToJson=*/true,
-        /*isTopLevel=*/true);
+        /*isTopLevel=*/true,
+        sparkTimestampMapKey_);
   }
 
   static std::vector<std::shared_ptr<exec::FunctionSignature>> signatures() {
@@ -68,7 +75,19 @@ class ToJsonFunction : public VectorFunction {
                 .argumentType("any")
                 .build()};
   }
+
+ private:
+  const bool sparkTimestampMapKey_;
 };
+
+std::vector<std::shared_ptr<exec::FunctionSignature>> toJsonSignatures() {
+  return ToJsonFunction::signatures();
+}
+
+std::unique_ptr<exec::VectorFunction> createToJsonFunction(
+    bool sparkTimestampMapKey) {
+  return std::make_unique<ToJsonFunction>(sparkTimestampMapKey);
+}
 
 /// @brief
 /// @param
@@ -76,7 +95,7 @@ class ToJsonFunction : public VectorFunction {
 /// @param make_unique
 BOLT_DECLARE_VECTOR_FUNCTION(
     udf_to_json,
-    ToJsonFunction::signatures(),
-    std::make_unique<ToJsonFunction>());
+    toJsonSignatures(),
+    createToJsonFunction(false));
 
 } // namespace bytedance::bolt::functions

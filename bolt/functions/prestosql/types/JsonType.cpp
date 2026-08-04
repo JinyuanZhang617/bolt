@@ -74,7 +74,8 @@ void generateJsonTyped(
     std::string& result,
     const TypePtr& type,
     const bool isToJson,
-    const core::QueryConfig* config = nullptr) {
+    const core::QueryConfig* config = nullptr,
+    const bool sparkTimestampMapKey = false) {
   auto value = input.valueAt(row);
 
   if constexpr (std::is_same_v<T, StringView>) {
@@ -173,6 +174,13 @@ void generateJsonTyped(
               type->toString()));
         }
       } else if constexpr (std::is_same_v<T, Timestamp>) {
+        if constexpr (isMapKey) {
+          if (sparkTimestampMapKey) {
+            folly::toAppend(value.toMicros(), &result);
+            result.append("\"");
+            return;
+          }
+        }
         result.append("\"");
         static const auto formatter =
             bytedance::bolt::functions::buildJodaDateTimeFormatter(
@@ -244,7 +252,8 @@ void castToJson(
     FlatVector<StringView>& flatResult,
     bool isMapKey = false,
     const bool isToJson = false,
-    const bool isTopLevel = false) {
+    const bool isTopLevel = false,
+    const bool sparkTimestampMapKey = false) {
   using T = typename TypeTraits<kind>::NativeType;
 
   // input is guaranteed to be in flat or constant encodings when passed in.
@@ -260,7 +269,13 @@ void castToJson(
       } else {
         result.clear();
         generateJsonTyped(
-            *inputVector, row, result, input.type(), isToJson, &config);
+            *inputVector,
+            row,
+            result,
+            input.type(),
+            isToJson,
+            &config,
+            sparkTimestampMapKey);
 
         flatResult.set(row, StringView{result});
       }
@@ -272,7 +287,13 @@ void castToJson(
       } else {
         result.clear();
         generateJsonTyped<T, true>(
-            *inputVector, row, result, input.type(), isToJson, &config);
+            *inputVector,
+            row,
+            result,
+            input.type(),
+            isToJson,
+            &config,
+            sparkTimestampMapKey);
 
         flatResult.set(row, StringView{result});
       }
@@ -287,7 +308,8 @@ void castToJsonFromArray(
     const SelectivityVector& rows,
     FlatVector<StringView>& flatResult,
     const bool isToJson,
-    const bool isTopLevel);
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey);
 
 void castToJsonFromMap(
     const BaseVector& input,
@@ -295,7 +317,8 @@ void castToJsonFromMap(
     const SelectivityVector& rows,
     FlatVector<StringView>& flatResult,
     const bool isToJson,
-    const bool isTopLevel);
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey);
 
 void castToJsonFromRow(
     const BaseVector& input,
@@ -303,7 +326,8 @@ void castToJsonFromRow(
     const SelectivityVector& rows,
     FlatVector<StringView>& flatResult,
     const bool isToJson,
-    const bool isTopLevel);
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey);
 
 // Casts complex-type input vectors to Json type.
 template <
@@ -316,16 +340,38 @@ void castToJson(
     FlatVector<StringView>& flatResult,
     bool isMapKey = false,
     const bool isToJson = false,
-    const bool isTopLevel = false) {
+    const bool isTopLevel = false,
+    const bool sparkTimestampMapKey = false) {
   BOLT_CHECK(
       !isMapKey, "Casting map with complex key type to JSON is not supported");
 
   if constexpr (kind == TypeKind::ARRAY) {
-    castToJsonFromArray(input, context, rows, flatResult, isToJson, isTopLevel);
+    castToJsonFromArray(
+        input,
+        context,
+        rows,
+        flatResult,
+        isToJson,
+        isTopLevel,
+        sparkTimestampMapKey);
   } else if constexpr (kind == TypeKind::MAP) {
-    castToJsonFromMap(input, context, rows, flatResult, isToJson, isTopLevel);
+    castToJsonFromMap(
+        input,
+        context,
+        rows,
+        flatResult,
+        isToJson,
+        isTopLevel,
+        sparkTimestampMapKey);
   } else if constexpr (kind == TypeKind::ROW) {
-    castToJsonFromRow(input, context, rows, flatResult, isToJson, isTopLevel);
+    castToJsonFromRow(
+        input,
+        context,
+        rows,
+        flatResult,
+        isToJson,
+        isTopLevel,
+        sparkTimestampMapKey);
   } else {
     BOLT_FAIL("Casting {} to JSON is not supported.", input.type()->toString());
   }
@@ -340,7 +386,8 @@ struct AsJson {
       const BufferPtr& elementToTopLevelRows,
       bool isMapKey = false,
       const bool isToJson = false,
-      const bool isTopLevel = false)
+      const bool isTopLevel = false,
+      const bool sparkTimestampMapKey = false)
       : decoded_(context) {
     ErrorVectorPtr oldErrors;
     context.swapErrors(oldErrors);
@@ -349,7 +396,15 @@ struct AsJson {
     } else {
       if (!exec::PeeledEncoding::isPeelable(input->encoding()) ||
           !rows.hasSelections()) {
-        doCast(context, input, rows, isMapKey, json_, isToJson, isTopLevel);
+        doCast(
+            context,
+            input,
+            rows,
+            isMapKey,
+            json_,
+            isToJson,
+            isTopLevel,
+            sparkTimestampMapKey);
       } else {
         exec::withContextSaver([&](exec::ContextSaver& saver) {
           exec::LocalSelectivityVector newRowsHolder(*context.execCtx());
@@ -372,7 +427,8 @@ struct AsJson {
               isMapKey,
               json_,
               isToJson,
-              isTopLevel);
+              isTopLevel,
+              sparkTimestampMapKey);
           json_ = context.getPeeledEncoding()->wrap(
               json_->type(), context.pool(), json_, rows);
         });
@@ -428,7 +484,8 @@ struct AsJson {
       bool isMapKey,
       VectorPtr& result,
       const bool isToJson,
-      const bool isTopLevel) {
+      const bool isTopLevel,
+      const bool sparkTimestampMapKey) {
     context.ensureWritable(baseRows, JSON(), result);
     auto flatJsonStrings = result->as<FlatVector<StringView>>();
 
@@ -441,7 +498,8 @@ struct AsJson {
         *flatJsonStrings,
         isMapKey,
         isToJson,
-        isTopLevel);
+        isTopLevel,
+        sparkTimestampMapKey);
   }
 
   // Combine exceptions in oldErrors into context.errors_ with a transformation
@@ -476,7 +534,8 @@ void castToJsonFromArray(
     const SelectivityVector& rows,
     FlatVector<StringView>& flatResult,
     const bool isToJson,
-    const bool isTopLevel) {
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey) {
   // input is guaranteed to be in flat encoding when passed in.
   auto inputArray = input.as<ArrayVector>();
 
@@ -513,7 +572,8 @@ void castToJsonFromArray(
       elementToTopLevelRows,
       /*isMapKey=*/false,
       isToJson,
-      /*isTopLevel=*/false};
+      /*isTopLevel=*/false,
+      sparkTimestampMapKey};
 
   // Estimates an upperbound of the total length of all Json strings for the
   // input according to the length of all elements Json strings and the
@@ -572,7 +632,8 @@ void castToJsonFromMap(
     const SelectivityVector& rows,
     FlatVector<StringView>& flatResult,
     const bool isToJson,
-    const bool isTopLevel) {
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey) {
   // input is guaranteed to be in flat encoding when passed in.
   auto inputMap = input.as<MapVector>();
 
@@ -610,7 +671,8 @@ void castToJsonFromMap(
       elementToTopLevelRows,
       /*isMapKey=*/true,
       isToJson,
-      /*isTopLevel=*/false};
+      /*isTopLevel=*/false,
+      sparkTimestampMapKey};
   AsJson valuesAsJson{
       context,
       mapValues,
@@ -618,7 +680,8 @@ void castToJsonFromMap(
       elementToTopLevelRows,
       /*isMapKey=*/false,
       isToJson,
-      /*isTopLevel=*/false};
+      /*isTopLevel=*/false,
+      sparkTimestampMapKey};
 
   // Estimates an upperbound of the total length of all Json strings for the
   // input according to the length of all elements Json strings and the
@@ -692,7 +755,8 @@ void castToJsonFromRow(
     const SelectivityVector& rows,
     FlatVector<StringView>& flatResult,
     const bool isToJson,
-    const bool isTopLevel) {
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey) {
   // input is guaranteed to be in flat encoding when passed in.
   BOLT_CHECK_EQ(input.encoding(), VectorEncoding::Simple::ROW);
   auto inputRow = input.as<RowVector>();
@@ -711,7 +775,8 @@ void castToJsonFromRow(
         /*elementToTopLevelRows=*/nullptr,
         /*isMapKey=*/false,
         isToJson,
-        /*isTopLevel=*/false);
+        /*isTopLevel=*/false,
+        sparkTimestampMapKey);
 
     context.applyToSelectedNoThrow(rows, [&](auto row) {
       if (inputRow->isNullAt(row)) {
@@ -1417,7 +1482,8 @@ void JsonCastOperator::castTo(
     const TypePtr& resultType,
     VectorPtr& result,
     const bool isToJson,
-    const bool isTopLevel) const {
+    const bool isTopLevel,
+    const bool sparkTimestampMapKey) const {
   context.ensureWritable(rows, resultType, result);
   auto* flatResult = result->as<FlatVector<StringView>>();
 
@@ -1432,7 +1498,8 @@ void JsonCastOperator::castTo(
       *flatResult,
       /*isMapKey=*/false,
       isToJson,
-      isTopLevel);
+      isTopLevel,
+      sparkTimestampMapKey);
 }
 
 /// Converts an input vector from Json type to the type of result vector.
