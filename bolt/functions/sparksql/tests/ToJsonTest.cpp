@@ -39,6 +39,11 @@ using JsonNativeType = StringView;
 
 class ToJsonTest : public SparkFunctionBaseTest {
  protected:
+  static void SetUpTestCase() {
+    SparkFunctionBaseTest::SetUpTestCase();
+    registerSimpleToJsonForTest();
+  }
+
   void testToJson(const VectorPtr& input, const VectorPtr& expected) {
     testToJson(input, std::nullopt, expected);
   }
@@ -262,51 +267,6 @@ TEST_F(ToJsonTest, basicTimestamp) {
        R"({"a":"1899-12-31T16:00:00.000-08:00"})",
        R"({})"});
   testToJson(input, expected);
-}
-
-TEST_F(ToJsonTest, timestampMapKeyUsesEpochMicros) {
-  auto epochUs = makeFlatVector<int64_t>(
-      {1451606400000000, 1451606400123000, 1451606400123456});
-  auto input = makeRowVector({epochUs});
-
-  // Reproduce:
-  //   SET spark.sql.session.timeZone = UTC;
-  //   SELECT to_json(map(timestamp_micros(epoch_us), 'v'))
-  //   FROM ... WHERE scenario = 'modern' ORDER BY id;
-  // The physical plan lowers this to:
-  //   to_json(map(timestamp_micros(epoch_us), v), Some(UTC))
-  // Spark Java serializes TIMESTAMP map keys as epoch micros, not as quoted
-  // ISO-8601 timestamp strings.
-  constexpr const char* kMapExpr =
-      "to_json(map(timestamp_micros(c0), 'v'), 'UTC')";
-
-  setTimezone("UTC");
-  auto expected = makeFlatVector<std::string>(
-      {R"({"1451606400000000":"v"})",
-       R"({"1451606400123000":"v"})",
-       R"({"1451606400123456":"v"})"});
-  assertEqualVectors(expected, evaluate(kMapExpr, input));
-  assertEqualVectors(
-      expected, evaluateSimplified<SimpleVector<StringView>>(kMapExpr, input));
-}
-
-TEST_F(ToJsonTest, vectorToJsonTimestampMapKeyUsesEpochMicros) {
-  auto epochUs = makeFlatVector<int64_t>(
-      {1451606400000000, 1451606400123000, 1451606400123456});
-  auto input = makeRowVector({epochUs});
-
-  // SparkSQL registers a vector to_json implementation for the one-argument
-  // form. It should keep Spark's TIMESTAMP map-key semantics and serialize the
-  // key as epoch micros, unlike the Presto implementation which formats the key
-  // as a timestamp string.
-  constexpr const char* kMapExpr = "to_json(map(timestamp_micros(c0), 'v'))";
-
-  setTimezone("UTC");
-  auto expected = makeFlatVector<std::string>(
-      {R"({"1451606400000000":"v"})",
-       R"({"1451606400123000":"v"})",
-       R"({"1451606400123456":"v"})"});
-  assertEqualVectors(expected, evaluate(kMapExpr, input));
 }
 
 TEST_F(ToJsonTest, basicDate) {

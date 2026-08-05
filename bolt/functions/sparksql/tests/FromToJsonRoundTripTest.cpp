@@ -35,6 +35,11 @@ namespace {
 
 class FromToJsonRoundTripTest : public SparkFunctionBaseTest {
  protected:
+  static void SetUpTestCase() {
+    SparkFunctionBaseTest::SetUpTestCase();
+    registerSimpleToJsonForTest();
+  }
+
   // Performs a round-trip test: original -> from_json -> to_json -> final, and
   // compare original and final.
   void testFromToJsonRoundTrip(

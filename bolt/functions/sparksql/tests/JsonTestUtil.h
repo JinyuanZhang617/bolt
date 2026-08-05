@@ -29,14 +29,24 @@
 #pragma once
 
 #include "bolt/core/Expressions.h"
+#include "bolt/functions/lib/RegistrationHelpers.h"
+#include "bolt/functions/sparksql/ToJson.h"
 #include "bolt/functions/sparksql/tests/SparkFunctionBaseTest.h"
 
 namespace bytedance::bolt::functions::sparksql::test {
 
+constexpr const char* kSimpleToJsonTestName = "test_simple_to_json";
 constexpr float kNaNFloat = std::numeric_limits<float>::quiet_NaN();
 constexpr float kInfFloat = std::numeric_limits<float>::infinity();
 constexpr double kNaNDouble = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInfDouble = std::numeric_limits<double>::infinity();
+
+inline void registerSimpleToJsonForTest() {
+  registerFunction<ToJsonFunction, Varchar, Generic<T1>>(
+      {kSimpleToJsonTestName});
+  registerFunction<ToJsonFunction, Varchar, Generic<T1>, Varchar>(
+      {kSimpleToJsonTestName});
+}
 
 inline core::CallTypedExprPtr createFromJson(const TypePtr& outputType) {
   std::vector<core::TypedExprPtr> inputs = {
@@ -56,6 +66,6 @@ inline core::CallTypedExprPtr createToJson(
     inputs.emplace_back(tz);
   }
   return std::make_shared<const core::CallTypedExpr>(
-      VARCHAR(), std::move(inputs), "to_json");
+      VARCHAR(), std::move(inputs), kSimpleToJsonTestName);
 }
 } // namespace bytedance::bolt::functions::sparksql::test

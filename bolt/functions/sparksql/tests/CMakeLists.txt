@@ -97,6 +97,7 @@ add_executable(
   StringSplitSQLTest.cpp
   StringTest.cpp
   ToJsonTest.cpp
+  ToJsonVectorTest.cpp
   UdfMapArrayCombineTest.cpp
   UdfMapFilterKeysTest.cpp
   UdfMapUpdateTest.cpp
