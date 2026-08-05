@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
 #include "folly/CPortability.h"
 #include "folly/Conv.h"
 #include "folly/json.h"
@@ -50,6 +49,7 @@ class ToJsonFunction : public VectorFunction {
          args[0]->typeKind() == TypeKind::MAP ||
          args[0]->typeKind() == TypeKind::ROW),
         "According to spark documents, to_json only support map, array, struct type parameter");
+
     auto castFactory = std::dynamic_pointer_cast<const JsonCastOperator>(
         JsonCastOperator::get());
     castFactory->castTo(

@@ -234,6 +234,7 @@ TEST_F(ToJsonTest, fromMap) {
         makeNullableFlatVector<JsonNativeType>(expectedBoolKey, VARCHAR());
     toJsonSimple("to_json(c0)", {mapVector}, expectedVector);
   }
+
 #ifdef SPARK_COMPATIBLE
   // Tests map with short decimal values.
   std::vector<std::vector<Pair<StringView, int64_t>>> maps{
