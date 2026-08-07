@@ -28,7 +28,6 @@ using JsonNativeType = StringView;
 template <typename TKey, typename TValue>
 using Pair = std::pair<TKey, std::optional<TValue>>;
 
-// class ToJsonTest : public SparkFunctionBaseTest {
 class ToJsonTest : public FunctionBaseTest {
  protected:
   template <typename T = FlatVector<StringView>>
@@ -930,13 +929,8 @@ TEST_F(ToJsonTest, timestampMapKey) {
       {{{Timestamp(1451606400, 123456000), "value"_sv}}}};
   auto input =
       makeMapVector<Timestamp, StringView>(maps, MAP(TIMESTAMP(), VARCHAR()));
-#ifdef SPARK_COMPATIBLE
   auto expected = makeNullableFlatVector<JsonNativeType>(
       {R"({"1451606400123456":"value"})"}, VARCHAR());
-#else
-  auto expected = makeNullableFlatVector<JsonNativeType>(
-      {R"({"2016-01-01T00:00:00.123Z":"value"})"}, VARCHAR());
-#endif
   auto actual = evaluate("to_json(c0)", makeRowVector({input}));
   ::bytedance::bolt::test::assertEqualVectors(expected, actual);
 }

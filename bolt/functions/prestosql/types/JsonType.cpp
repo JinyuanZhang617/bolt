@@ -173,13 +173,11 @@ void generateJsonTyped(
               type->toString()));
         }
       } else if constexpr (std::is_same_v<T, Timestamp>) {
-#ifdef SPARK_COMPATIBLE
         if constexpr (isMapKey) {
           folly::toAppend(value.toMicros(), &result);
           result.append("\"");
           return;
         }
-#endif
         result.append("\"");
         static const auto formatter =
             bytedance::bolt::functions::buildJodaDateTimeFormatter(
