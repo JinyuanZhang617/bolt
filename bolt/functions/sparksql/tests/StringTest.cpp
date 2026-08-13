@@ -1582,6 +1582,62 @@ TEST_F(StringTest, lower) {
   // Ligatures.
   EXPECT_EQ(lower("ß ﬁ ﬃ ﬀ ﬆ ῗ"), "ß ﬁ ﬃ ﬀ ﬆ ῗ");
 }
+
+TEST_F(StringTest, lowerGreekSigmaCompatibility) {
+  struct TestCase {
+    int32_t id;
+    std::string input;
+    std::string defaultExpected;
+    std::string sparkExpected;
+  };
+
+  const std::vector<TestCase> testCases = {
+      {1, "Σ", "σ", "σ"},
+      {2, "ΣΣ", "σς", "σς"},
+      {3, "ΣΣ8", "σς8", "σς8"},
+      {4, "ΣΣ8I", "σς8i", "σσ8i"},
+      {5, "ΣΣI", "σσi", "σσi"},
+      {6, "AΣ", "aς", "aς"},
+      {7, "AΣ8", "aς8", "aς8"},
+      {8, "AΣ8B", "aς8b", "aσ8b"},
+      {9, "ΣA", "σa", "σa"},
+      {10, "8Σ", "8σ", "8σ"},
+      {11, "8Σ8", "8σ8", "8σ8"},
+      {12, "AΣ.", "aς.", "aς."},
+      {13, "AΣ-B", "aς-b", "aσ-b"},
+      {14, "AΣ_B", "aς_b", "aσ_b"},
+      {15,
+       "prefix ΣΣ46URZHBLJJ8",
+       "prefix σς46urzhbljj8",
+       "prefix σσ46urzhbljj8"},
+      {16,
+       "ΣΣ8IBLMR5OIM8 suffix",
+       "σς8iblmr5oim8 suffix",
+       "σσ8iblmr5oim8 suffix"},
+      {17, "ΣΑΛΑΤΑ", "σαλατα", "σαλατα"},
+      {18, "ΘΑΛΑΣΣΙΝΟΣ", "θαλασσινος", "θαλασσινος"},
+      {19, "ΟΣ", "ος", "ος"},
+      {20, "ΟΣ8", "ος8", "ος8"},
+      {21, "ΟΣΑ", "οσα", "οσα"},
+      {22, "σςΣ", "σςς", "σςς"},
+      {23, "Σ Σ", "σ σ", "σ σ"},
+      {24, "Σ-Σ", "σ-σ", "σ-ς"},
+      {25, "Σ.Σ", "σ.ς", "σ.ς"},
+      {26, "AΣ1B", "aς1b", "aσ1b"},
+      {27, "AΣ1", "aς1", "aς1"},
+      {28, "σς", "σς", "σς"},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testing::Message() << "id=" << testCase.id);
+#ifdef SPARK_COMPATIBLE
+    EXPECT_EQ(lower(testCase.input), testCase.sparkExpected);
+#else
+    EXPECT_EQ(lower(testCase.input), testCase.defaultExpected);
+#endif
+  }
+}
+
 TEST_F(StringTest, upper) {
   // Empty strings.
   EXPECT_EQ(upper(""), "");

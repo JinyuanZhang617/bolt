@@ -47,6 +47,98 @@ namespace bytedance::bolt::functions {
 using namespace stringCore;
 
 namespace {
+#ifdef SPARK_COMPATIBLE
+bool isJavaCased(UChar32 codePoint) {
+  const auto category = u_charType(codePoint);
+  return category == U_LOWERCASE_LETTER || category == U_UPPERCASE_LETTER ||
+      category == U_TITLECASE_LETTER ||
+      (codePoint >= 0x02B0 && codePoint <= 0x02B8) ||
+      (codePoint >= 0x02C0 && codePoint <= 0x02C1) ||
+      (codePoint >= 0x02E0 && codePoint <= 0x02E4) || codePoint == 0x0345 ||
+      codePoint == 0x037A || (codePoint >= 0x1D2C && codePoint <= 0x1D61) ||
+      (codePoint >= 0x2160 && codePoint <= 0x217F) ||
+      (codePoint >= 0x24B6 && codePoint <= 0x24E9);
+}
+
+bool isJavaWordBoundary(
+    const icu::UnicodeString& input,
+    int32_t offset,
+    icu::BreakIterator& breakIterator) {
+  if (!breakIterator.isBoundary(offset)) {
+    return false;
+  }
+  if (offset == 0 || offset == input.length()) {
+    return true;
+  }
+
+  const auto bridgesBoundary = [](UChar32 codePoint) {
+    return codePoint == '"' || codePoint == '-';
+  };
+  return !bridgesBoundary(input.char32At(offset - 1)) &&
+      !bridgesBoundary(input.char32At(offset));
+}
+
+bool isJavaFinalSigma(
+    const icu::UnicodeString& input,
+    int32_t sigmaOffset,
+    icu::BreakIterator& breakIterator) {
+  auto offset = sigmaOffset;
+  while (offset >= 0 && !isJavaWordBoundary(input, offset, breakIterator)) {
+    const auto codePoint = input.char32At(offset - 1);
+    if (isJavaCased(codePoint)) {
+      offset = sigmaOffset + 1;
+      while (offset < input.length() &&
+             !isJavaWordBoundary(input, offset, breakIterator)) {
+        const auto followingCodePoint = input.char32At(offset);
+        if (isJavaCased(followingCodePoint)) {
+          return false;
+        }
+        offset += U16_LENGTH(followingCodePoint);
+      }
+      return true;
+    }
+    offset -= U16_LENGTH(codePoint);
+  }
+  return false;
+}
+
+template <typename TOutString>
+void sparkLower(TOutString& output, const StringView& input) {
+  icu::UnicodeString unicodeInput = icu::UnicodeString::fromUTF8(
+      {input.data(), static_cast<int32_t>(input.size())});
+
+  auto sigmaOffset = unicodeInput.indexOf(0x03A3);
+  if (sigmaOffset < 0) {
+    stringImpl::lower<false>(output, input);
+    return;
+  }
+
+  UErrorCode status = U_ZERO_ERROR;
+  const auto& locale = stringCore::getDefaultLocale();
+  std::unique_ptr<icu::BreakIterator> breakIterator(
+      icu::BreakIterator::createWordInstance(locale, status));
+  BOLT_USER_CHECK(
+      U_SUCCESS(status),
+      "Failed to create BreakIterator: {}, for locale: {}, Data Path: {}",
+      u_errorName(status),
+      locale.getName(),
+      u_getDataDirectory());
+  breakIterator->setText(unicodeInput);
+
+  do {
+    unicodeInput.setCharAt(
+        sigmaOffset,
+        isJavaFinalSigma(unicodeInput, sigmaOffset, *breakIterator) ? 0x03C2
+                                                                    : 0x03C3);
+    sigmaOffset = unicodeInput.indexOf(0x03A3, sigmaOffset + 1);
+  } while (sigmaOffset >= 0);
+
+  std::string sigmaAdjustedInput;
+  unicodeInput.toUTF8String(sigmaAdjustedInput);
+  stringImpl::lower<false>(output, sigmaAdjustedInput);
+}
+#endif
+
 /**
  * Upper and Lower functions have a fast path for ascii where the functions
  * can be applied in place.
@@ -64,8 +156,17 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
       rows.applyToSelected([&](int row) {
         auto proxy = exec::StringWriter<>(results, row);
         if constexpr (isLower) {
+#ifdef SPARK_COMPATIBLE
+          if constexpr (isAscii) {
+            stringImpl::lower<isAscii>(
+                proxy, decodedInput->valueAt<StringView>(row));
+          } else {
+            sparkLower(proxy, decodedInput->valueAt<StringView>(row));
+          }
+#else
           stringImpl::lower<isAscii>(
               proxy, decodedInput->valueAt<StringView>(row));
+#endif
         } else {
           stringImpl::upper<isAscii>(
               proxy, decodedInput->valueAt<StringView>(row));
