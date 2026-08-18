@@ -43,6 +43,8 @@
 #include <fmt/core.h>
 #include <fmt/format.h>
 #include <fmt/printf.h>
+#include <glog/logging.h>
+#include <atomic>
 #include <type_traits>
 namespace bytedance::bolt::functions {
 
@@ -53,97 +55,82 @@ bool locateEmptyStringsReturnZero() {
 }
 
 namespace {
-#ifdef SPARK_COMPATIBLE
-bool isJavaCased(UChar32 codePoint) {
-  const auto category = u_charType(codePoint);
-  return category == U_LOWERCASE_LETTER || category == U_UPPERCASE_LETTER ||
-      category == U_TITLECASE_LETTER ||
-      (codePoint >= 0x02B0 && codePoint <= 0x02B8) ||
-      (codePoint >= 0x02C0 && codePoint <= 0x02C1) ||
-      (codePoint >= 0x02E0 && codePoint <= 0x02E4) || codePoint == 0x0345 ||
-      codePoint == 0x037A || (codePoint >= 0x1D2C && codePoint <= 0x1D61) ||
-      (codePoint >= 0x2160 && codePoint <= 0x217F) ||
-      (codePoint >= 0x24B6 && codePoint <= 0x24E9);
-}
 
-bool isJavaWordBoundary(
-    const icu::UnicodeString& input,
-    int32_t offset,
-    icu::BreakIterator& breakIterator) {
-  if (!breakIterator.isBoundary(offset)) {
-    return false;
-  }
-  if (offset == 0 || offset == input.length()) {
-    return true;
-  }
+constexpr uint64_t kUpperLowerStatsLogInterval = 10'000;
 
-  const auto bridgesBoundary = [](UChar32 codePoint) {
-    return codePoint == '"' || codePoint == '-';
-  };
-  return !bridgesBoundary(input.char32At(offset - 1)) &&
-      !bridgesBoundary(input.char32At(offset));
-}
-
-bool isJavaFinalSigma(
-    const icu::UnicodeString& input,
-    int32_t sigmaOffset,
-    icu::BreakIterator& breakIterator) {
-  auto offset = sigmaOffset;
-  while (offset >= 0 && !isJavaWordBoundary(input, offset, breakIterator)) {
-    const auto codePoint = input.char32At(offset - 1);
-    if (isJavaCased(codePoint)) {
-      offset = sigmaOffset + 1;
-      while (offset < input.length() &&
-             !isJavaWordBoundary(input, offset, breakIterator)) {
-        const auto followingCodePoint = input.char32At(offset);
-        if (isJavaCased(followingCodePoint)) {
-          return false;
-        }
-        offset += U16_LENGTH(followingCodePoint);
-      }
-      return true;
+template <typename LogFunction>
+void logAtRowMilestones(
+    std::atomic<uint64_t>& nextMilestone,
+    uint64_t totalRows,
+    LogFunction&& logFunction) {
+  auto milestone = nextMilestone.load(std::memory_order_relaxed);
+  while (totalRows >= milestone) {
+    if (nextMilestone.compare_exchange_weak(
+            milestone,
+            milestone + kUpperLowerStatsLogInterval,
+            std::memory_order_relaxed)) {
+      logFunction(milestone);
+      milestone += kUpperLowerStatsLogInterval;
     }
-    offset -= U16_LENGTH(codePoint);
   }
-  return false;
 }
 
-template <typename TOutString>
-void sparkLower(TOutString& output, const StringView& input) {
-  icu::UnicodeString unicodeInput = icu::UnicodeString::fromUTF8(
-      {input.data(), static_cast<int32_t>(input.size())});
-
-  auto sigmaOffset = unicodeInput.indexOf(0x03A3);
-  if (sigmaOffset < 0) {
-    stringImpl::lower<false>(output, input);
-    return;
+class UpperLowerRowStats {
+ public:
+  void recordBranchRows(bool isLower, uint64_t numRows) {
+    if (isLower) {
+      lowerRows_.fetch_add(numRows, std::memory_order_relaxed);
+    } else {
+      upperRows_.fetch_add(numRows, std::memory_order_relaxed);
+    }
+    const auto totalRows =
+        branchRows_.fetch_add(numRows, std::memory_order_relaxed) + numRows;
+    logAtRowMilestones(
+        nextBranchLogMilestone_, totalRows, [&](uint64_t milestone) {
+          const auto lowerRows = lowerRows_.load(std::memory_order_relaxed);
+          const auto upperRows = upperRows_.load(std::memory_order_relaxed);
+          LOG(INFO) << "UpperLower branch row stats: milestone=" << milestone
+                    << ", totalRows=" << lowerRows + upperRows
+                    << ", isLower=true(lower)=" << lowerRows
+                    << ", isLower=false(upper)=" << upperRows;
+        });
   }
 
-  UErrorCode status = U_ZERO_ERROR;
-  const auto& locale = stringCore::getDefaultLocale();
-  std::unique_ptr<icu::BreakIterator> breakIterator(
-      icu::BreakIterator::createWordInstance(locale, status));
-  BOLT_USER_CHECK(
-      U_SUCCESS(status),
-      "Failed to create BreakIterator: {}, for locale: {}, Data Path: {}",
-      u_errorName(status),
-      locale.getName(),
-      u_getDataDirectory());
-  breakIterator->setText(unicodeInput);
+  void recordBatchNonAsciiRows(uint64_t numRows, uint64_t actuallyAsciiRows) {
+    const auto totalRows =
+        batchNonAsciiRows_.fetch_add(numRows, std::memory_order_relaxed) +
+        numRows;
+    batchNonAsciiActuallyAsciiRows_.fetch_add(
+        actuallyAsciiRows, std::memory_order_relaxed);
+    logAtRowMilestones(
+        nextBatchNonAsciiLogMilestone_, totalRows, [&](uint64_t milestone) {
+          const auto rows = batchNonAsciiRows_.load(std::memory_order_relaxed);
+          const auto asciiRows =
+              batchNonAsciiActuallyAsciiRows_.load(std::memory_order_relaxed);
+          const auto nonAsciiRows = rows >= asciiRows ? rows - asciiRows : 0;
+          LOG(INFO) << "UpperLower batch-isAscii=false row stats: milestone="
+                    << milestone << ", checkedRows=" << rows
+                    << ", batchIsAsciiFalseButRowIsAsciiTrue=" << asciiRows
+                    << ", actuallyNonAsciiRows=" << nonAsciiRows;
+        });
+  }
 
-  do {
-    unicodeInput.setCharAt(
-        sigmaOffset,
-        isJavaFinalSigma(unicodeInput, sigmaOffset, *breakIterator) ? 0x03C2
-                                                                    : 0x03C3);
-    sigmaOffset = unicodeInput.indexOf(0x03A3, sigmaOffset + 1);
-  } while (sigmaOffset >= 0);
+ private:
+  std::atomic<uint64_t> lowerRows_{0};
+  std::atomic<uint64_t> upperRows_{0};
+  std::atomic<uint64_t> branchRows_{0};
+  std::atomic<uint64_t> nextBranchLogMilestone_{kUpperLowerStatsLogInterval};
 
-  std::string sigmaAdjustedInput;
-  unicodeInput.toUTF8String(sigmaAdjustedInput);
-  stringImpl::lower<false>(output, sigmaAdjustedInput);
+  std::atomic<uint64_t> batchNonAsciiRows_{0};
+  std::atomic<uint64_t> batchNonAsciiActuallyAsciiRows_{0};
+  std::atomic<uint64_t> nextBatchNonAsciiLogMilestone_{
+      kUpperLowerStatsLogInterval};
+};
+
+UpperLowerRowStats& upperLowerRowStats() {
+  static UpperLowerRowStats stats;
+  return stats;
 }
-#endif
 
 /**
  * Upper and Lower functions have a fast path for ascii where the functions
@@ -159,26 +146,26 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
         const SelectivityVector& rows,
         const DecodedVector* decodedInput,
         FlatVector<StringView>* results) {
+      uint64_t actuallyAsciiRows = 0;
       rows.applyToSelected([&](int row) {
         auto proxy = exec::StringWriter<>(results, row);
+        const auto input = decodedInput->valueAt<StringView>(row);
+        if constexpr (!isAscii) {
+          actuallyAsciiRows += stringCore::isAscii(input.data(), input.size());
+        }
         if constexpr (isLower) {
-#ifdef SPARK_COMPATIBLE
-          if constexpr (isAscii) {
-            stringImpl::lower<isAscii>(
-                proxy, decodedInput->valueAt<StringView>(row));
-          } else {
-            sparkLower(proxy, decodedInput->valueAt<StringView>(row));
-          }
-#else
-          stringImpl::lower<isAscii>(
-              proxy, decodedInput->valueAt<StringView>(row));
-#endif
+          stringImpl::lower<isAscii>(proxy, input);
         } else {
-          stringImpl::upper<isAscii>(
-              proxy, decodedInput->valueAt<StringView>(row));
+          stringImpl::upper<isAscii>(proxy, input);
         }
         proxy.finalize();
       });
+      const auto numRows = static_cast<uint64_t>(rows.countSelected());
+      upperLowerRowStats().recordBranchRows(isLower, numRows);
+      if constexpr (!isAscii) {
+        upperLowerRowStats().recordBatchNonAsciiRows(
+            numRows, actuallyAsciiRows);
+      }
     }
   };
 
@@ -199,6 +186,8 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
       }
       proxy.finalize();
     });
+    upperLowerRowStats().recordBranchRows(
+        isLower, static_cast<uint64_t>(rows.countSelected()));
   }
 
  public:
