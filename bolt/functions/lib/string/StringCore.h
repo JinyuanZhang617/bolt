@@ -33,6 +33,7 @@
 #include <arm_sve.h>
 #endif
 #include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -52,6 +53,9 @@
 
 #include "bolt/common/base/Exceptions.h"
 #include "bolt/functions/lib/string/RegexUtils.h"
+#ifdef SPARK_COMPATIBLE
+#include "bolt/functions/lib/string/SparkLower.h"
+#endif
 #include "bolt/type/StringView.h"
 
 #if (ENABLE_VECTORIZATION > 0) && !defined(_DEBUG) && !defined(DEBUG)
@@ -1031,6 +1035,12 @@ FOLLY_ALWAYS_INLINE static std::string toLower(
   }
   icu::UnicodeString unicodeStr =
       icu::UnicodeString::fromUTF8({str, static_cast<int32_t>(length)});
+#ifdef SPARK_COMPATIBLE
+  const auto sigmaOffset = unicodeStr.indexOf(0x03A3);
+  if (sigmaOffset >= 0) {
+    spark::adjustJavaSigmaInPlace(unicodeStr, sigmaOffset);
+  }
+#endif
   unicodeStr.toLower(locale);
   result.clear();
   unicodeStr.toUTF8String(result);

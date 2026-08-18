@@ -1628,6 +1628,7 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
       {28, "σς", "σς", "σς"},
       {29, "AΣ@b", "aς@b", "aς@b"},
       {30, "A@Σ", "a@σ", "a@σ"},
+      {31, "AΣ AΣ AΣ AΣ AΣ", "aς aς aς aς aς", "aς aς aς aς aς"},
   };
 
   for (const auto& testCase : testCases) {
