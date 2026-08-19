@@ -41,8 +41,6 @@
 #include <fmt/core.h>
 #include <fmt/format.h>
 #include <fmt/printf.h>
-#include <glog/logging.h>
-#include <atomic>
 #include <type_traits>
 namespace bytedance::bolt::functions {
 
@@ -148,7 +146,13 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
           actuallyAsciiRows += stringCore::isAscii(input.data(), input.size());
         }
         if constexpr (isLower) {
-          stringImpl::lower<isAscii>(proxy, input);
+          if constexpr (isAscii) {
+            stringImpl::lower<true>(proxy, input);
+          } else if (stringCore::isAscii(input.data(), input.size())) {
+            stringImpl::lower<true>(proxy, input);
+          } else {
+            stringImpl::lower<false>(proxy, input);
+          }
         } else {
           stringImpl::upper<isAscii>(proxy, input);
         }
