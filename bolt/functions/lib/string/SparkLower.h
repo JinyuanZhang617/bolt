@@ -21,16 +21,14 @@
 
 #pragma once
 
-#include <memory>
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 
 #include <folly/CPortability.h>
 #include <folly/small_vector.h>
-#include <unicode/brkiter.h>
-#include <unicode/locid.h>
 #include <unicode/uchar.h>
 #include <unicode/unistr.h>
-
-#include "bolt/common/base/Exceptions.h"
 
 namespace bytedance::bolt::functions::stringCore::spark {
 
@@ -46,106 +44,357 @@ FOLLY_ALWAYS_INLINE bool isJavaCased(UChar32 codePoint) {
       (codePoint >= 0x24B6 && codePoint <= 0x24E9);
 }
 
-FOLLY_ALWAYS_INLINE bool isJavaWordBoundary(
-    const icu::UnicodeString& input,
-    int32_t offset,
-    icu::BreakIterator& breakIterator) {
-  if (!breakIterator.isBoundary(offset)) {
-    return false;
+enum JavaWordProperty : uint32_t {
+  kJavaWordNone = 0,
+  kJavaWordIgnore = 1U << 0,
+  kJavaWordEnclosing = 1U << 1,
+  kJavaWordDanda = 1U << 2,
+  kJavaWordKanji = 1U << 3,
+  kJavaWordKatakana = 1U << 4,
+  kJavaWordHiragana = 1U << 5,
+  kJavaWordCjkDiacritic = 1U << 6,
+  kJavaWordLetter = 1U << 7,
+  kJavaWordDigit = 1U << 8,
+  kJavaWordMidWord = 1U << 9,
+  kJavaWordMidNumber = 1U << 10,
+  kJavaWordPreNumber = 1U << 11,
+  kJavaWordPostNumber = 1U << 12,
+  kJavaWordWhitespace = 1U << 13,
+  kJavaWordLineSeparator = 1U << 14,
+  kJavaWordBase = 1U << 15,
+};
+
+FOLLY_ALWAYS_INLINE bool isJavaKanji(UChar32 codePoint) {
+  return codePoint == 0x3005 || (codePoint >= 0x4E00 && codePoint <= 0x9FA5) ||
+      (codePoint >= 0xF900 && codePoint <= 0xFA2D);
+}
+
+FOLLY_ALWAYS_INLINE uint32_t javaWordProperties(UChar32 codePoint) {
+  const auto category = u_charType(codePoint);
+  uint32_t properties = kJavaWordNone;
+
+  if (category == U_FORMAT_CHAR) {
+    properties |= kJavaWordIgnore;
   }
-  if (offset == 0 || offset == input.length()) {
+  if (category == U_NON_SPACING_MARK || category == U_ENCLOSING_MARK) {
+    properties |= kJavaWordEnclosing;
+  }
+  if (codePoint == 0x0964 || codePoint == 0x0965) {
+    properties |= kJavaWordDanda;
+  }
+
+  const bool kanji = isJavaKanji(codePoint);
+  const bool katakana = (codePoint >= 0x30A1 && codePoint <= 0x30FA) ||
+      codePoint == 0x30FD || codePoint == 0x30FE;
+  const bool hiragana = (codePoint >= 0x3041 && codePoint <= 0x3094) ||
+      codePoint == 0x309D || codePoint == 0x309E;
+  const bool cjkDiacritic = (codePoint >= 0x3099 && codePoint <= 0x309C) ||
+      codePoint == 0x30FB || codePoint == 0x30FC;
+
+  if (kanji) {
+    properties |= kJavaWordKanji;
+  }
+  if (katakana) {
+    properties |= kJavaWordKatakana;
+  }
+  if (hiragana) {
+    properties |= kJavaWordHiragana;
+  }
+  if (cjkDiacritic) {
+    properties |= kJavaWordCjkDiacritic;
+  }
+
+  const bool isLetterCategory = category == U_UPPERCASE_LETTER ||
+      category == U_LOWERCASE_LETTER || category == U_TITLECASE_LETTER ||
+      category == U_MODIFIER_LETTER || category == U_OTHER_LETTER;
+  if ((isLetterCategory || category == U_COMBINING_SPACING_MARK) && !kanji &&
+      !katakana && !hiragana && !cjkDiacritic) {
+    properties |= kJavaWordLetter;
+  }
+  if (category == U_DECIMAL_DIGIT_NUMBER || category == U_LETTER_NUMBER ||
+      category == U_OTHER_NUMBER) {
+    properties |= kJavaWordDigit;
+  }
+  if (category == U_DASH_PUNCTUATION || category == U_CONNECTOR_PUNCTUATION ||
+      codePoint == 0x00AD || codePoint == 0x2027 || codePoint == '"' ||
+      codePoint == '\'' || codePoint == '.') {
+    properties |= kJavaWordMidWord;
+  }
+  if (codePoint == '"' || codePoint == '\'' || codePoint == ',' ||
+      codePoint == 0x066B || codePoint == '.') {
+    properties |= kJavaWordMidNumber;
+  }
+  if ((category == U_CURRENCY_SYMBOL && codePoint != 0x00A2) ||
+      codePoint == '#' || codePoint == '.') {
+    properties |= kJavaWordPreNumber;
+  }
+  if (codePoint == '%' || codePoint == '&' || codePoint == 0x00A2 ||
+      codePoint == 0x066A || codePoint == 0x2030 || codePoint == 0x2031) {
+    properties |= kJavaWordPostNumber;
+  }
+  if (category == U_SPACE_SEPARATOR || codePoint == '\t') {
+    properties |= kJavaWordWhitespace;
+  }
+  if (codePoint == '\n' || codePoint == '\f' || codePoint == 0x2028 ||
+      codePoint == 0x2029) {
+    properties |= kJavaWordLineSeparator;
+  }
+  if (category != U_NON_SPACING_MARK && category != U_ENCLOSING_MARK &&
+      category != U_CONTROL_CHAR && category != U_FORMAT_CHAR &&
+      category != U_LINE_SEPARATOR && category != U_PARAGRAPH_SEPARATOR) {
+    properties |= kJavaWordBase;
+  }
+
+  return properties;
+}
+
+class JavaWordCursor {
+ public:
+  JavaWordCursor(const icu::UnicodeString& input, int32_t offset)
+      : input_(&input), offset_(offset) {
+    skipIgnored();
+  }
+
+  bool atEnd() const {
+    return offset_ >= input_->length();
+  }
+
+  int32_t offset() const {
+    return offset_;
+  }
+
+  UChar32 codePoint() const {
+    return input_->char32At(offset_);
+  }
+
+  uint32_t properties() const {
+    return atEnd() ? kJavaWordNone : javaWordProperties(codePoint());
+  }
+
+  bool consume(uint32_t property) {
+    if ((properties() & property) == 0) {
+      return false;
+    }
+    consumeCurrent();
     return true;
   }
 
-  const auto bridgesBoundary = [](UChar32 codePoint) {
-    return codePoint == '"' || codePoint == '-';
-  };
-  return !bridgesBoundary(input.char32At(offset - 1)) &&
-      !bridgesBoundary(input.char32At(offset));
-}
-
-FOLLY_ALWAYS_INLINE bool isJavaFinalSigma(
-    const icu::UnicodeString& input,
-    int32_t sigmaOffset,
-    icu::BreakIterator& breakIterator) {
-  auto offset = sigmaOffset;
-  while (offset >= 0 && !isJavaWordBoundary(input, offset, breakIterator)) {
-    const auto codePoint = input.char32At(offset - 1);
-    if (isJavaCased(codePoint)) {
-      offset = sigmaOffset + 1;
-      while (offset < input.length() &&
-             !isJavaWordBoundary(input, offset, breakIterator)) {
-        const auto followingCodePoint = input.char32At(offset);
-        if (isJavaCased(followingCodePoint)) {
-          return false;
-        }
-        offset += U16_LENGTH(followingCodePoint);
-      }
-      return true;
+  void consumeCurrent() {
+    if (!atEnd()) {
+      offset_ += U16_LENGTH(codePoint());
+      skipIgnored();
     }
-    offset -= U16_LENGTH(codePoint);
-  }
-  return false;
-}
-
-/// Holds one word break iterator per thread. BreakIterator::setText retains a
-/// reference to its input, hence the iterator is rebound to emptyText_ between
-/// calls before the caller's UnicodeString is modified or destroyed.
-class SparkBreakIteratorHolder {
- public:
-  SparkBreakIteratorHolder() {
-    UErrorCode status = U_ZERO_ERROR;
-    const auto& locale = icu::Locale::getRoot();
-    breakIterator_.reset(
-        icu::BreakIterator::createWordInstance(locale, status));
-    BOLT_USER_CHECK(
-        U_SUCCESS(status) && breakIterator_ != nullptr,
-        "Failed to create BreakIterator: {}, for locale: {}, Data Path: {}",
-        u_errorName(status),
-        locale.getName(),
-        u_getDataDirectory());
-    breakIterator_->setText(emptyText_);
-  }
-
-  icu::BreakIterator& breakIterator() {
-    return *breakIterator_;
-  }
-
-  const icu::UnicodeString& emptyText() const {
-    return emptyText_;
   }
 
  private:
-  // Members are destroyed in reverse declaration order. Keep emptyText_ alive
-  // until after breakIterator_ releases its retained text reference.
-  icu::UnicodeString emptyText_;
-  std::unique_ptr<icu::BreakIterator> breakIterator_;
+  void skipIgnored() {
+    while (offset_ < input_->length()) {
+      const auto current = input_->char32At(offset_);
+      if ((javaWordProperties(current) & kJavaWordIgnore) == 0) {
+        break;
+      }
+      offset_ += U16_LENGTH(current);
+    }
+  }
+
+  const icu::UnicodeString* input_;
+  int32_t offset_;
 };
 
-FOLLY_ALWAYS_INLINE SparkBreakIteratorHolder& sparkBreakIteratorHolder() {
-  static thread_local SparkBreakIteratorHolder holder;
-  return holder;
+FOLLY_ALWAYS_INLINE bool consumeJavaLetter(JavaWordCursor& cursor) {
+  auto trial = cursor;
+  if (!trial.consume(kJavaWordLetter)) {
+    return false;
+  }
+  while (trial.consume(kJavaWordEnclosing)) {
+  }
+  cursor = trial;
+  return true;
 }
 
-class ScopedBreakIteratorText {
- public:
-  ScopedBreakIteratorText(
-      SparkBreakIteratorHolder& holder,
-      const icu::UnicodeString& input)
-      : holder_(holder) {
-    holder_.breakIterator().setText(input);
+FOLLY_ALWAYS_INLINE bool consumeJavaDigit(JavaWordCursor& cursor) {
+  auto trial = cursor;
+  if (!trial.consume(kJavaWordDigit)) {
+    return false;
+  }
+  while (trial.consume(kJavaWordEnclosing)) {
+  }
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE bool consumeJavaWord(JavaWordCursor& cursor) {
+  auto trial = cursor;
+  if (!consumeJavaLetter(trial)) {
+    return false;
+  }
+  while (consumeJavaLetter(trial)) {
+  }
+  while (true) {
+    auto continuation = trial;
+    if (!continuation.consume(kJavaWordMidWord) ||
+        !consumeJavaLetter(continuation)) {
+      break;
+    }
+    while (consumeJavaLetter(continuation)) {
+    }
+    trial = continuation;
+  }
+  trial.consume(kJavaWordDanda);
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE bool consumeJavaNumber(JavaWordCursor& cursor) {
+  auto trial = cursor;
+  if (!consumeJavaDigit(trial)) {
+    return false;
+  }
+  while (consumeJavaDigit(trial)) {
+  }
+  while (true) {
+    auto continuation = trial;
+    if (!continuation.consume(kJavaWordMidNumber) ||
+        !consumeJavaDigit(continuation)) {
+      break;
+    }
+    while (consumeJavaDigit(continuation)) {
+    }
+    trial = continuation;
+  }
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE bool consumeJavaWordNumberSequence(JavaWordCursor& cursor) {
+  auto trial = cursor;
+  bool lastWasNumber = false;
+  if (consumeJavaWord(trial)) {
+    lastWasNumber = false;
+  } else if (consumeJavaNumber(trial)) {
+    lastWasNumber = true;
+  } else {
+    return false;
   }
 
-  ~ScopedBreakIteratorText() {
-    holder_.breakIterator().setText(holder_.emptyText());
+  while (true) {
+    auto continuation = trial;
+    const bool consumed = lastWasNumber ? consumeJavaWord(continuation)
+                                        : consumeJavaNumber(continuation);
+    if (!consumed) {
+      break;
+    }
+    lastWasNumber = !lastWasNumber;
+    trial = continuation;
+  }
+  if (lastWasNumber) {
+    trial.consume(kJavaWordPostNumber);
+  }
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE bool consumeJavaPrefixedNumberSequence(
+    JavaWordCursor& cursor) {
+  auto trial = cursor;
+  if (!trial.consume(kJavaWordPreNumber) || !consumeJavaNumber(trial)) {
+    return false;
   }
 
-  ScopedBreakIteratorText(const ScopedBreakIteratorText&) = delete;
-  ScopedBreakIteratorText& operator=(const ScopedBreakIteratorText&) = delete;
+  bool lastWasNumber = true;
+  while (true) {
+    auto continuation = trial;
+    const bool consumed = lastWasNumber ? consumeJavaWord(continuation)
+                                        : consumeJavaNumber(continuation);
+    if (!consumed) {
+      break;
+    }
+    lastWasNumber = !lastWasNumber;
+    trial = continuation;
+  }
+  if (lastWasNumber) {
+    trial.consume(kJavaWordPostNumber);
+  }
+  cursor = trial;
+  return true;
+}
 
- private:
-  SparkBreakIteratorHolder& holder_;
-};
+FOLLY_ALWAYS_INLINE bool consumeJavaWhitespace(JavaWordCursor& cursor) {
+  auto trial = cursor;
+  bool consumed = false;
+  while (trial.consume(kJavaWordWhitespace)) {
+    consumed = true;
+  }
+  if (!trial.atEnd() && trial.codePoint() == '\r') {
+    trial.consumeCurrent();
+    consumed = true;
+  }
+  if (trial.consume(kJavaWordLineSeparator)) {
+    consumed = true;
+  }
+  if (!consumed) {
+    return false;
+  }
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE bool consumeJavaRun(
+    JavaWordCursor& cursor,
+    uint32_t properties) {
+  auto trial = cursor;
+  if (!trial.consume(properties)) {
+    return false;
+  }
+  while (trial.consume(properties)) {
+  }
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE bool consumeJavaBaseWithEnclosingMarks(
+    JavaWordCursor& cursor) {
+  auto trial = cursor;
+  if (!trial.consume(kJavaWordBase) || !trial.consume(kJavaWordEnclosing)) {
+    return false;
+  }
+  while (trial.consume(kJavaWordEnclosing)) {
+  }
+  cursor = trial;
+  return true;
+}
+
+FOLLY_ALWAYS_INLINE int32_t
+nextJavaWordBoundary(const icu::UnicodeString& input, int32_t start) {
+  JavaWordCursor fallback(input, start);
+  if (fallback.atEnd()) {
+    return input.length();
+  }
+  fallback.consumeCurrent();
+  auto end = fallback.offset();
+
+  const auto consider = [&](auto consume) {
+    JavaWordCursor candidate(input, start);
+    if (consume(candidate)) {
+      end = std::max(end, candidate.offset());
+    }
+  };
+
+  consider(consumeJavaWordNumberSequence);
+  consider(consumeJavaPrefixedNumberSequence);
+  consider(consumeJavaWhitespace);
+  consider([](JavaWordCursor& cursor) {
+    return consumeJavaRun(cursor, kJavaWordKatakana | kJavaWordCjkDiacritic);
+  });
+  consider([](JavaWordCursor& cursor) {
+    return consumeJavaRun(cursor, kJavaWordHiragana | kJavaWordCjkDiacritic);
+  });
+  consider([](JavaWordCursor& cursor) {
+    return consumeJavaRun(cursor, kJavaWordKanji);
+  });
+  consider(consumeJavaBaseWithEnclosingMarks);
+  return end;
+}
 
 FOLLY_ALWAYS_INLINE void adjustJavaSigmaInPlace(
     icu::UnicodeString& input,
@@ -155,22 +404,40 @@ FOLLY_ALWAYS_INLINE void adjustJavaSigmaInPlace(
     char16_t codePoint;
   };
 
-  folly::small_vector<Replacement, 4> replacements;
-  {
-    auto& holder = sparkBreakIteratorHolder();
-    ScopedBreakIteratorText scopedText(holder, input);
-    auto& breakIterator = holder.breakIterator();
-    do {
-      replacements.push_back(
-          {sigmaOffset,
-           isJavaFinalSigma(input, sigmaOffset, breakIterator)
-               ? char16_t{0x03C2}
-               : char16_t{0x03C3}});
-      sigmaOffset = input.indexOf(0x03A3, sigmaOffset + 1);
-    } while (sigmaOffset >= 0);
+  if (sigmaOffset < 0) {
+    return;
   }
 
-  // BreakIterator no longer references input. It is now safe to mutate it.
+  folly::small_vector<Replacement, 4> replacements;
+  auto segmentStart = int32_t{0};
+  while (segmentStart < input.length()) {
+    const auto segmentEnd = nextJavaWordBoundary(input, segmentStart);
+    auto casedCount = uint32_t{0};
+    auto lastCasedOffset = int32_t{-1};
+    auto lastSigmaReplacement = std::numeric_limits<size_t>::max();
+
+    auto offset = segmentStart;
+    while (offset < segmentEnd) {
+      const auto codePoint = input.char32At(offset);
+      if (codePoint == 0x03A3) {
+        replacements.push_back({offset, char16_t{0x03C3}});
+        lastSigmaReplacement = replacements.size() - 1;
+      }
+      if (isJavaCased(codePoint)) {
+        ++casedCount;
+        lastCasedOffset = offset;
+      }
+      offset += U16_LENGTH(codePoint);
+    }
+
+    if (casedCount >= 2 &&
+        lastSigmaReplacement != std::numeric_limits<size_t>::max() &&
+        replacements[lastSigmaReplacement].offset == lastCasedOffset) {
+      replacements[lastSigmaReplacement].codePoint = char16_t{0x03C2};
+    }
+    segmentStart = segmentEnd;
+  }
+
   for (const auto& replacement : replacements) {
     input.setCharAt(replacement.offset, replacement.codePoint);
   }
