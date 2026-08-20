@@ -54,82 +54,6 @@ bool locateEmptyStringsReturnZero() {
 
 namespace {
 
-constexpr uint64_t kUpperLowerStatsLogInterval = 10'000;
-
-template <typename LogFunction>
-void logAtRowMilestones(
-    std::atomic<uint64_t>& nextMilestone,
-    uint64_t totalRows,
-    LogFunction&& logFunction) {
-  auto milestone = nextMilestone.load(std::memory_order_relaxed);
-  while (totalRows >= milestone) {
-    if (nextMilestone.compare_exchange_weak(
-            milestone,
-            milestone + kUpperLowerStatsLogInterval,
-            std::memory_order_relaxed)) {
-      logFunction(milestone);
-      milestone += kUpperLowerStatsLogInterval;
-    }
-  }
-}
-
-class UpperLowerRowStats {
- public:
-  void recordBranchRows(bool isLower, uint64_t numRows) {
-    if (isLower) {
-      lowerRows_.fetch_add(numRows, std::memory_order_relaxed);
-    } else {
-      upperRows_.fetch_add(numRows, std::memory_order_relaxed);
-    }
-    const auto totalRows =
-        branchRows_.fetch_add(numRows, std::memory_order_relaxed) + numRows;
-    logAtRowMilestones(
-        nextBranchLogMilestone_, totalRows, [&](uint64_t milestone) {
-          const auto lowerRows = lowerRows_.load(std::memory_order_relaxed);
-          const auto upperRows = upperRows_.load(std::memory_order_relaxed);
-          LOG(INFO) << "UpperLower branch row stats: milestone=" << milestone
-                    << ", totalRows=" << lowerRows + upperRows
-                    << ", isLower=true(lower)=" << lowerRows
-                    << ", isLower=false(upper)=" << upperRows;
-        });
-  }
-
-  void recordBatchNonAsciiRows(uint64_t numRows, uint64_t actuallyAsciiRows) {
-    const auto totalRows =
-        batchNonAsciiRows_.fetch_add(numRows, std::memory_order_relaxed) +
-        numRows;
-    batchNonAsciiActuallyAsciiRows_.fetch_add(
-        actuallyAsciiRows, std::memory_order_relaxed);
-    logAtRowMilestones(
-        nextBatchNonAsciiLogMilestone_, totalRows, [&](uint64_t milestone) {
-          const auto rows = batchNonAsciiRows_.load(std::memory_order_relaxed);
-          const auto asciiRows =
-              batchNonAsciiActuallyAsciiRows_.load(std::memory_order_relaxed);
-          const auto nonAsciiRows = rows >= asciiRows ? rows - asciiRows : 0;
-          LOG(INFO) << "UpperLower batch-isAscii=false row stats: milestone="
-                    << milestone << ", checkedRows=" << rows
-                    << ", batchIsAsciiFalseButRowIsAsciiTrue=" << asciiRows
-                    << ", actuallyNonAsciiRows=" << nonAsciiRows;
-        });
-  }
-
- private:
-  std::atomic<uint64_t> lowerRows_{0};
-  std::atomic<uint64_t> upperRows_{0};
-  std::atomic<uint64_t> branchRows_{0};
-  std::atomic<uint64_t> nextBranchLogMilestone_{kUpperLowerStatsLogInterval};
-
-  std::atomic<uint64_t> batchNonAsciiRows_{0};
-  std::atomic<uint64_t> batchNonAsciiActuallyAsciiRows_{0};
-  std::atomic<uint64_t> nextBatchNonAsciiLogMilestone_{
-      kUpperLowerStatsLogInterval};
-};
-
-UpperLowerRowStats& upperLowerRowStats() {
-  static UpperLowerRowStats stats;
-  return stats;
-}
-
 /**
  * Upper and Lower functions have a fast path for ascii where the functions
  * can be applied in place.
@@ -144,13 +68,9 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
         const SelectivityVector& rows,
         const DecodedVector* decodedInput,
         FlatVector<StringView>* results) {
-      uint64_t actuallyAsciiRows = 0;
       rows.applyToSelected([&](int row) {
         auto proxy = exec::StringWriter<>(results, row);
         const auto input = decodedInput->valueAt<StringView>(row);
-        if constexpr (!isAscii) {
-          actuallyAsciiRows += stringCore::isAscii(input.data(), input.size());
-        }
         if constexpr (isLower) {
           if constexpr (isAscii) {
             stringImpl::lower<true>(proxy, input);
@@ -164,12 +84,6 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
         }
         proxy.finalize();
       });
-      const auto numRows = static_cast<uint64_t>(rows.countSelected());
-      upperLowerRowStats().recordBranchRows(isLower, numRows);
-      if constexpr (!isAscii) {
-        upperLowerRowStats().recordBatchNonAsciiRows(
-            numRows, actuallyAsciiRows);
-      }
     }
   };
 
@@ -190,8 +104,6 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
       }
       proxy.finalize();
     });
-    upperLowerRowStats().recordBranchRows(
-        isLower, static_cast<uint64_t>(rows.countSelected()));
   }
 
  public:
