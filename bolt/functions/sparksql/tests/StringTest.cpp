@@ -1633,8 +1633,8 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
       {33, "AΣ·B", "aσ·b", "aς·b"},
       {34, "AΣ가B", "aς가b", "aσ가b"},
       {35, "AΣ㐀B", "aς㐀b", "aσ㐀b"},
-      {36, "AΣ\u200BB", "aς\u200Bb", "aσ\u200Bb"},
-      {37, "AΣ\u202FB", "aσ\u202Fb", "aς\u202Fb"},
+      {36, "AΣ\u200BB", "aσ\u200Bb", "aσ\u200Bb"},
+      {37, "AΣ\u202FB", "aς\u202Fb", "aς\u202Fb"},
       {38, "A1-Σ", "a1-σ", "a1-σ"},
   };
 
