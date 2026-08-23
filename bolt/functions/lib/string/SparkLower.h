@@ -34,7 +34,23 @@
 
 namespace bytedance::bolt::functions::stringCore::spark {
 
+FOLLY_ALWAYS_INLINE bool isJavaNumber(UChar32 codePoint) {
+  // Java groups all three Unicode number categories into its numeric word
+  // rules. This is also used to distinguish A1-Σ from AΣ-B below.
+  const auto category = u_charType(codePoint);
+  return category == U_DECIMAL_DIGIT_NUMBER || category == U_LETTER_NUMBER ||
+      category == U_OTHER_NUMBER;
+}
+
 FOLLY_ALWAYS_INLINE bool isJavaCased(UChar32 codePoint) {
+  // Java 11 uses Unicode 10, where Georgian Mkhedruli is an uncased Lo
+  // script. ICU 74 uses Unicode 15.1, where it is classified as Ll. Hence
+  // Java requires AΣა -> aςა, while ICU's Cased property produces aσა.
+  if ((codePoint >= 0x10D0 && codePoint <= 0x10FA) ||
+      (codePoint >= 0x10FD && codePoint <= 0x10FF)) {
+    return false;
+  }
+
   const auto category = u_charType(codePoint);
   return category == U_LOWERCASE_LETTER || category == U_UPPERCASE_LETTER ||
       category == U_TITLECASE_LETTER ||
@@ -50,18 +66,52 @@ FOLLY_ALWAYS_INLINE bool isJavaWordBoundary(
     const icu::UnicodeString& input,
     int32_t offset,
     icu::BreakIterator& breakIterator) {
-  if (!breakIterator.isBoundary(offset)) {
-    return false;
-  }
   if (offset == 0 || offset == input.length()) {
     return true;
   }
 
-  const auto bridgesBoundary = [](UChar32 codePoint) {
-    return codePoint == '"' || codePoint == '-';
+  const auto previousOffset = input.moveIndex32(offset, -1);
+  const auto previousCodePoint = input.char32At(previousOffset);
+  const auto nextCodePoint = input.char32At(offset);
+
+  // ICU 74 does not report these boundaries, but Java 11 treats both code
+  // points as word separators:
+  //   U+00B7: AΣ·B -> aς·b.
+  //   U+202F: AΣ\u202FB -> aς\u202Fb.
+  const auto forcesBoundary = [](UChar32 codePoint) {
+    return codePoint == 0x00B7 || codePoint == 0x202F;
   };
-  return !bridgesBoundary(input.char32At(offset - 1)) &&
-      !bridgesBoundary(input.char32At(offset));
+  if (forcesBoundary(previousCodePoint) || forcesBoundary(nextCodePoint)) {
+    return true;
+  }
+
+  // A hyphen joins Java words in AΣ-B -> aσ-b, but a hyphen following a
+  // number does not connect that number to the word on its right:
+  // A1-Σ -> a1-σ.
+  if (previousCodePoint == '-' && previousOffset > 0) {
+    const auto beforeHyphenOffset = input.moveIndex32(previousOffset, -1);
+    if (isJavaNumber(input.char32At(beforeHyphenOffset))) {
+      return true;
+    }
+  }
+
+  if (!breakIterator.isBoundary(offset)) {
+    return false;
+  }
+
+  // Remove boundaries that ICU 74 reports but Java 11 bridges:
+  //   Number: AΣ²B -> aσ²b.
+  //   Format: AΣ\u200BB -> aσ\u200Bb.
+  //   OtherLetter: AΣ가B -> aσ가b and AΣ㐀B -> aσ㐀b.
+  //   Hyphen: AΣ-B -> aσ-b (subject to the numeric override above).
+  const auto bridgesBoundary = [](UChar32 codePoint) {
+    const auto category = u_charType(codePoint);
+    return codePoint == '"' || codePoint == '-' ||
+        category == U_DECIMAL_DIGIT_NUMBER || category == U_LETTER_NUMBER ||
+        category == U_OTHER_NUMBER || category == U_FORMAT_CHAR ||
+        category == U_OTHER_LETTER;
+  };
+  return !bridgesBoundary(previousCodePoint) && !bridgesBoundary(nextCodePoint);
 }
 
 FOLLY_ALWAYS_INLINE bool isJavaFinalSigma(

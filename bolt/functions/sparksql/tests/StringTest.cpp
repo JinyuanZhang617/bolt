@@ -1629,6 +1629,17 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
       {29, "AΣ@b", "aς@b", "aς@b"},
       {30, "A@Σ", "a@σ", "a@σ"},
       {31, "AΣ AΣ AΣ AΣ AΣ", "aς aς aς aς aς", "aς aς aς aς aς"},
+      {32, "AΣ²B", "aς²b", "aσ²b"},
+      {33, "AΣ·B", "aσ·b", "aς·b"},
+      {34, "AΣ가B", "aς가b", "aσ가b"},
+      {35, "AΣ㐀B", "aς㐀b", "aσ㐀b"},
+      {36, "AΣ\u200BB", "aσ\u200Bb", "aσ\u200Bb"},
+      {37, "AΣ\u202FB", "aς\u202Fb", "aς\u202Fb"},
+      {38, "A1-Σ", "a1-σ", "a1-σ"},
+      // Georgian Mkhedruli letters are cased in ICU 74, but not in Java 11.
+      {39, "AΣა", "aσა", "aςა"},
+      // Supplementary cased characters must be recognized without truncation.
+      {40, "AΣ𐐅", "aσ𐐭", "aσ𐐭"},
   };
 
   for (const auto& testCase : testCases) {
