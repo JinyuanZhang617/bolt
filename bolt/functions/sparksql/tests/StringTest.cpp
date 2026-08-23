@@ -1636,6 +1636,10 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
       {36, "AΣ\u200BB", "aσ\u200Bb", "aσ\u200Bb"},
       {37, "AΣ\u202FB", "aς\u202Fb", "aς\u202Fb"},
       {38, "A1-Σ", "a1-σ", "a1-σ"},
+      // Georgian Mkhedruli letters are cased in ICU 74, but not in Java 11.
+      {39, "AΣა", "aσა", "aςა"},
+      // Supplementary cased characters must be recognized without truncation.
+      {40, "AΣ𐐅", "aσ𐐭", "aσ𐐭"},
   };
 
   for (const auto& testCase : testCases) {
@@ -1646,6 +1650,11 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
     EXPECT_EQ(lower(testCase.input), testCase.defaultExpected);
 #endif
   }
+
+  // The common production shape is a long word containing a sparse sigma.
+  const auto longInput = std::string(32'768, 'A') + "ΣB";
+  const auto longExpected = std::string(32'768, 'a') + "σb";
+  EXPECT_EQ(lower(longInput), longExpected);
 }
 
 TEST_F(StringTest, upper) {

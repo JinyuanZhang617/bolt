@@ -51,6 +51,9 @@
 #include <folly/Range.h>
 #include <folly/String.h>
 #include <folly/lang/Bits.h>
+#ifdef SPARK_COMPATIBLE
+#include <folly/small_vector.h>
+#endif
 
 #include "bolt/common/base/Exceptions.h"
 #include "bolt/common/base/SimdUtil.h"
@@ -1058,9 +1061,15 @@ FOLLY_ALWAYS_INLINE static std::string toLower(
   icu::UnicodeString unicodeStr =
       icu::UnicodeString::fromUTF8({str, static_cast<int32_t>(length)});
 #ifdef SPARK_COMPATIBLE
-  const auto sigmaOffset = unicodeStr.indexOf(0x03A3);
-  if (sigmaOffset >= 0) {
-    spark::adjustJavaSigmaInPlace(unicodeStr, sigmaOffset);
+  const auto firstSigmaOffset = unicodeStr.indexOf(0x03A3);
+  if (firstSigmaOffset >= 0) {
+    folly::small_vector<int32_t, 4> sigmaOffsets;
+    auto sigmaOffset = firstSigmaOffset;
+    do {
+      sigmaOffsets.push_back(sigmaOffset);
+      sigmaOffset = unicodeStr.indexOf(0x03A3, sigmaOffset + 1);
+    } while (sigmaOffset >= 0);
+    spark::adjustJavaSigmaInPlace(unicodeStr, sigmaOffsets);
   }
 #endif
   unicodeStr.toLower(locale);
