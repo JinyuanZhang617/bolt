@@ -105,9 +105,11 @@ FOLLY_ALWAYS_INLINE bool isJavaCased(UChar32 codePoint) {
   return range != begin && codePoint <= (range - 1)->last;
 }
 
-/// Equivalent to OpenJDK RuleBasedBreakIterator.handlePrevious(). It returns
-/// a guaranteed boundary at or before offset, but not necessarily the closest
-/// one.
+/// Specialized port of OpenJDK RuleBasedBreakIterator.handlePrevious(). It
+/// returns a guaranteed boundary at or before offset, but not necessarily the
+/// closest one. GenJavaWordBreakData rejects data with lookahead states or
+/// additional data; those invariants are required by the specialized forward
+/// evaluator below.
 int32_t findSafeBoundaryBefore(
     const icu::UnicodeString& input,
     int32_t offset) {
@@ -172,9 +174,10 @@ FOLLY_ALWAYS_INLINE void advanceForwardMatch(
   match.offset = nextOffset;
 }
 
-/// Determines whether one sigma is final without first scanning to the end of
-/// its word. An accepting DFA position beyond a cased character proves that
-/// the character belongs to the same longest-match word, allowing early exit.
+/// Implements the word-boundary part of OpenJDK
+/// ConditionalSpecialCasing.isFinalCased(). An accepting DFA position beyond a
+/// cased character proves that it belongs to the same longest-match word,
+/// allowing early exit without first scanning to the end of the word.
 bool isJavaFinalSigma(const icu::UnicodeString& input, int32_t sigmaOffset) {
   auto boundary = findSafeBoundaryBefore(input, sigmaOffset);
 

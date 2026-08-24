@@ -23,9 +23,9 @@
 
 namespace bytedance::bolt::functions::stringCore::spark {
 
-/// Rewrites Greek capital sigmas so ICU lowercasing reproduces OpenJDK 11
-/// final-sigma semantics. sigmaOffsets contains the UTF-16 offset of every
-/// U+03A3 in input, in ascending order.
+/// Rewrites Greek capital sigmas so ICU lowercasing reproduces ByteOpenJDK
+/// 17.0.9+9 root-locale final-sigma semantics. sigmaOffsets contains the UTF-16
+/// offset of every U+03A3 in input, in ascending order.
 void adjustJavaSigmaInPlace(
     icu::UnicodeString& input,
     folly::Range<const int32_t*> sigmaOffsets);
