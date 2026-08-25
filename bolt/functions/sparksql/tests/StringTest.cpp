@@ -28,6 +28,7 @@
  * --------------------------------------------------------------------------
  */
 
+#include "bolt/common/base/SparkCompatibility.h"
 #include "bolt/common/base/tests/GTestUtils.h"
 #include "bolt/functions/sparksql/tests/SparkFunctionBaseTest.h"
 #include "bolt/type/Type.h"
@@ -1645,11 +1646,9 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testing::Message() << "id=" << testCase.id);
-#ifdef SPARK_COMPATIBLE
-    EXPECT_EQ(lower(testCase.input), testCase.sparkExpected);
-#else
-    EXPECT_EQ(lower(testCase.input), testCase.defaultExpected);
-#endif
+    const auto& expected =
+        kSparkCompatible ? testCase.sparkExpected : testCase.defaultExpected;
+    EXPECT_EQ(lower(testCase.input), expected);
   }
 
   // The common production shape is a long word containing a sparse sigma.

@@ -51,16 +51,12 @@
 #include <folly/Range.h>
 #include <folly/String.h>
 #include <folly/lang/Bits.h>
-#ifdef SPARK_COMPATIBLE
 #include <folly/small_vector.h>
-#endif
 
 #include "bolt/common/base/Exceptions.h"
 #include "bolt/common/base/SimdUtil.h"
 #include "bolt/functions/lib/string/RegexUtils.h"
-#ifdef SPARK_COMPATIBLE
 #include "bolt/functions/lib/string/SparkLower.h"
-#endif
 #include "bolt/type/StringView.h"
 
 #if (ENABLE_VECTORIZATION > 0) && !defined(_DEBUG) && !defined(DEBUG)
@@ -1034,7 +1030,7 @@ FOLLY_ALWAYS_INLINE static const icu::Locale& getDefaultLocale() {
   return locale;
 }
 
-template <bool isAscii = true>
+template <bool isAscii = true, bool sparkCompatible = false>
 FOLLY_ALWAYS_INLINE static std::string toLower(
     const char* str,
     size_t length,
@@ -1060,43 +1056,43 @@ FOLLY_ALWAYS_INLINE static std::string toLower(
   }
   icu::UnicodeString unicodeStr =
       icu::UnicodeString::fromUTF8({str, static_cast<int32_t>(length)});
-#ifdef SPARK_COMPATIBLE
-  const auto firstSigmaOffset = unicodeStr.indexOf(0x03A3);
-  if (firstSigmaOffset >= 0) {
-    folly::small_vector<int32_t, 4> sigmaOffsets;
-    auto sigmaOffset = firstSigmaOffset;
-    do {
-      sigmaOffsets.push_back(sigmaOffset);
-      sigmaOffset = unicodeStr.indexOf(0x03A3, sigmaOffset + 1);
-    } while (sigmaOffset >= 0);
-    spark::adjustJavaSigmaInPlace(unicodeStr, sigmaOffsets);
+  if constexpr (sparkCompatible) {
+    const auto firstSigmaOffset = unicodeStr.indexOf(0x03A3);
+    if (firstSigmaOffset >= 0) {
+      folly::small_vector<int32_t, 4> sigmaOffsets;
+      auto sigmaOffset = firstSigmaOffset;
+      do {
+        sigmaOffsets.push_back(sigmaOffset);
+        sigmaOffset = unicodeStr.indexOf(0x03A3, sigmaOffset + 1);
+      } while (sigmaOffset >= 0);
+      spark::adjustJavaSigmaInPlace(unicodeStr, sigmaOffsets);
+    }
   }
-#endif
   unicodeStr.toLower(locale);
   result.clear();
   unicodeStr.toUTF8String(result);
   return result;
 }
 
-template <bool isAscii = true>
+template <bool isAscii = true, bool sparkCompatible = false>
 FOLLY_ALWAYS_INLINE static std::string toLower(
     const std::string& str,
     const icu::Locale& locale = getDefaultLocale()) {
-  return toLower<isAscii>(str.data(), str.size(), locale);
+  return toLower<isAscii, sparkCompatible>(str.data(), str.size(), locale);
 }
 
-template <bool isAscii = true>
+template <bool isAscii = true, bool sparkCompatible = false>
 FOLLY_ALWAYS_INLINE static std::string toLower(
     const std::string_view& str,
     const icu::Locale& locale = getDefaultLocale()) {
-  return toLower<isAscii>(str.data(), str.size(), locale);
+  return toLower<isAscii, sparkCompatible>(str.data(), str.size(), locale);
 }
 
-template <bool isAscii = true>
+template <bool isAscii = true, bool sparkCompatible = false>
 FOLLY_ALWAYS_INLINE static std::string toLower(
     const StringView& str,
     const icu::Locale& locale = getDefaultLocale()) {
-  return toLower<isAscii>(str.data(), str.size(), locale);
+  return toLower<isAscii, sparkCompatible>(str.data(), str.size(), locale);
 }
 
 template <bool isAscii = true>

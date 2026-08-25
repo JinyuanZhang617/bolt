@@ -77,7 +77,10 @@ class UpperLowerTemplateFunction : public exec::VectorFunction {
           } else if (stringCore::isAscii(input.data(), input.size())) {
             stringImpl::lower<true>(proxy, input);
           } else {
-            stringImpl::lower<false>(proxy, input);
+            // only non-ascii path has spark compatible behavior, so we can use
+            // the global flag here
+            stringImpl::lower<false, ::bytedance::bolt::kSparkCompatible>(
+                proxy, input);
           }
         } else {
           stringImpl::upper<isAscii>(proxy, input);
