@@ -1642,6 +1642,14 @@ TEST_F(StringTest, lowerGreekSigmaCompatibility) {
       {39, "AΣა", "aσა", "aσა"},
       // Supplementary cased characters must be recognized without truncation.
       {40, "AΣ𐐅", "aσ𐐭", "aσ𐐭"},
+      {41, "𐐅Σ", "𐐭ς", "𐐭ς"},
+      {42, "AΣ B", "aς b", "aς b"},
+      {43, "A𐐅Σ", "a𐐭ς", "a𐐭σ"},
+      {44, "A\U00020000Σ", "a\U00020000σ", "a\U00020000σ"},
+      {45, "AΣ\U00020000B", "aς\U00020000b", "aς\U00020000b"},
+      {46, "A Σ", "a σ", "a σ"},
+      {47, "A𐐅1Σ", "a𐐭1ς", "a𐐭1σ"},
+      {48, "AΣ1\U00020000B", "aς1\U00020000b", "aς1\U00020000b"},
   };
 
   for (const auto& testCase : testCases) {

@@ -26,6 +26,7 @@ namespace bytedance::bolt::functions::stringCore::spark {
 namespace {
 
 constexpr UChar32 kCharacterIteratorDone = 0xFFFF;
+constexpr int32_t kBreakIteratorDone = -1;
 constexpr char16_t kSmallSigma = u'\u03C3';
 constexpr char16_t kFinalSigma = u'\u03C2';
 constexpr int8_t kIgnoreCategory = -1;
@@ -50,6 +51,40 @@ static_assert(kJavaWordEndStates.size() == kJavaWordForwardStateCount);
 FOLLY_ALWAYS_INLINE int32_t
 nextCodePointOffset(const icu::UnicodeString& input, int32_t offset) {
   return offset + U16_LENGTH(input.char32At(offset));
+}
+
+FOLLY_ALWAYS_INLINE UChar32
+javaCurrent(const icu::UnicodeString& input, int32_t offset) {
+  if (offset >= input.length()) {
+    return kCharacterIteratorDone;
+  }
+  UChar32 codePoint;
+  U16_NEXT(input.getBuffer(), offset, input.length(), codePoint);
+  return codePoint;
+}
+
+FOLLY_ALWAYS_INLINE int32_t
+javaNextOffset(const icu::UnicodeString& input, int32_t offset) {
+  if (offset >= input.length()) {
+    return input.length();
+  }
+  U16_FWD_1(input.getBuffer(), offset, input.length());
+  return offset;
+}
+
+struct PreviousCharacter {
+  int32_t offset;
+  UChar32 codePoint;
+};
+
+FOLLY_ALWAYS_INLINE PreviousCharacter
+javaPrevious(const icu::UnicodeString& input, int32_t offset) {
+  if (offset <= 0) {
+    return {0, kCharacterIteratorDone};
+  }
+  UChar32 codePoint;
+  U16_PREV(input.getBuffer(), 0, offset, codePoint);
+  return {offset, codePoint};
 }
 
 FOLLY_ALWAYS_INLINE int32_t
@@ -110,11 +145,16 @@ FOLLY_ALWAYS_INLINE bool isJavaCased(UChar32 codePoint) {
 /// closest one. GenJavaWordBreakData rejects data with lookahead states or
 /// additional data; those invariants are required by the specialized forward
 /// evaluator below.
-int32_t findSafeBoundaryBefore(
+struct SafeBoundaryResult {
+  int32_t offset;
+  bool needsUtf16Fallback;
+};
+
+SafeBoundaryResult findSafeBoundaryBefore(
     const icu::UnicodeString& input,
     int32_t offset) {
   if (offset <= 0) {
-    return 0;
+    return {0, false};
   }
 
   uint16_t state = kStartState;
@@ -128,7 +168,10 @@ int32_t findSafeBoundaryBefore(
     // java.text.CharacterIterator uses U+FFFF as its DONE sentinel, including
     // when that value occurs literally in the input.
     if (codePoint == kCharacterIteratorDone) {
-      return currentOffset;
+      return {currentOffset, false};
+    }
+    if (U16_LENGTH(codePoint) == 2) {
+      return {0, true};
     }
     lastCategory = category;
     category = lookupJavaWordCategory(codePoint);
@@ -142,6 +185,36 @@ int32_t findSafeBoundaryBefore(
     // transition. Ignore characters require only one compensating step.
     if (lastCategory != kIgnoreCategory) {
       currentOffset = nextCodePointOffset(input, currentOffset);
+    }
+  }
+  return {currentOffset, false};
+}
+
+/// Ports RuleBasedBreakIterator.handlePrevious() for an arbitrary UTF-16
+/// code-unit offset, including an offset inside a surrogate pair.
+int32_t findJavaSafeBoundary(const icu::UnicodeString& input, int32_t offset) {
+  uint16_t state = kStartState;
+  int8_t category = 0;
+  int8_t lastCategory = 0;
+  auto currentOffset = offset;
+  auto codePoint = javaCurrent(input, currentOffset);
+
+  while (codePoint != kCharacterIteratorDone && state != kStopState) {
+    lastCategory = category;
+    category = lookupJavaWordCategory(codePoint);
+    if (category != kIgnoreCategory) {
+      state = lookupBackwardState(state, category);
+    }
+
+    const auto previous = javaPrevious(input, currentOffset);
+    currentOffset = previous.offset;
+    codePoint = previous.codePoint;
+  }
+
+  if (codePoint != kCharacterIteratorDone) {
+    currentOffset = javaNextOffset(input, currentOffset);
+    if (lastCategory != kIgnoreCategory) {
+      currentOffset = javaNextOffset(input, currentOffset);
     }
   }
   return currentOffset;
@@ -174,12 +247,82 @@ FOLLY_ALWAYS_INLINE void advanceForwardMatch(
   match.offset = nextOffset;
 }
 
+int32_t findJavaNextBoundary(const icu::UnicodeString& input, int32_t start) {
+  if (start >= input.length()) {
+    return kBreakIteratorDone;
+  }
+
+  ForwardMatch match{start, javaNextOffset(input, start), kStartState};
+  while (match.offset < input.length() && match.state != kStopState) {
+    const auto codePoint = javaCurrent(input, match.offset);
+    if (codePoint == kCharacterIteratorDone) {
+      break;
+    }
+    advanceForwardMatch(match, codePoint);
+  }
+  return match.acceptedEnd;
+}
+
+int32_t javaFollowing(const icu::UnicodeString& input, int32_t offset) {
+  auto boundary = findJavaSafeBoundary(input, offset);
+  while (boundary != kBreakIteratorDone && boundary <= offset) {
+    boundary = findJavaNextBoundary(input, boundary);
+  }
+  return boundary;
+}
+
+FOLLY_ALWAYS_INLINE bool isJavaWordBoundary(
+    const icu::UnicodeString& input,
+    int32_t offset) {
+  return offset == 0 || javaFollowing(input, offset - 1) == offset;
+}
+
+/// Directly follows ConditionalSpecialCasing.isFinalCased() for strings whose
+/// UTF-16 representation contains a surrogate pair.
+bool isJavaFinalSigmaWithSurrogates(
+    const icu::UnicodeString& input,
+    int32_t sigmaOffset) {
+  UChar32 codePoint = 0;
+  for (auto offset = sigmaOffset;
+       offset >= 0 && !isJavaWordBoundary(input, offset);
+       offset -= U16_LENGTH(codePoint)) {
+    codePoint = input.char32At(offset - 1);
+    if (!isJavaCased(codePoint)) {
+      continue;
+    }
+
+    for (auto followingOffset = sigmaOffset + 1;
+         followingOffset < input.length() &&
+         !isJavaWordBoundary(input, followingOffset);
+         followingOffset += U16_LENGTH(codePoint)) {
+      codePoint = input.char32At(followingOffset);
+      if (isJavaCased(codePoint)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 /// Implements the word-boundary part of OpenJDK
 /// ConditionalSpecialCasing.isFinalCased(). An accepting DFA position beyond a
 /// cased character proves that it belongs to the same longest-match word,
 /// allowing early exit without first scanning to the end of the word.
-bool isJavaFinalSigma(const icu::UnicodeString& input, int32_t sigmaOffset) {
-  auto boundary = findSafeBoundaryBefore(input, sigmaOffset);
+enum class FinalSigmaResult : uint8_t {
+  kNotFinal,
+  kFinal,
+  kNeedsUtf16Fallback,
+};
+
+FinalSigmaResult evaluateJavaFinalSigma(
+    const icu::UnicodeString& input,
+    int32_t sigmaOffset) {
+  const auto safeBoundary = findSafeBoundaryBefore(input, sigmaOffset);
+  if (safeBoundary.needsUtf16Fallback) {
+    return FinalSigmaResult::kNeedsUtf16Fallback;
+  }
+  auto boundary = safeBoundary.offset;
 
   while (boundary < input.length()) {
     auto match = startForwardMatch(input, boundary);
@@ -191,6 +334,9 @@ bool isJavaFinalSigma(const icu::UnicodeString& input, int32_t sigmaOffset) {
       const auto codePoint = input.char32At(codePointOffset);
       if (codePoint == kCharacterIteratorDone) {
         break;
+      }
+      if (U16_LENGTH(codePoint) == 2) {
+        return FinalSigmaResult::kNeedsUtf16Fallback;
       }
 
       if (codePointOffset < sigmaOffset) {
@@ -207,24 +353,25 @@ bool isJavaFinalSigma(const icu::UnicodeString& input, int32_t sigmaOffset) {
 
       if (match.acceptedEnd > sigmaOffset) {
         if (!hasCasedBeforeSigma) {
-          return false;
+          return FinalSigmaResult::kNotFinal;
         }
         if (firstCasedAfterSigma >= 0 &&
             match.acceptedEnd > firstCasedAfterSigma) {
-          return false;
+          return FinalSigmaResult::kNotFinal;
         }
       }
     }
 
     if (match.acceptedEnd > sigmaOffset) {
-      return hasCasedBeforeSigma;
+      return hasCasedBeforeSigma ? FinalSigmaResult::kFinal
+                                 : FinalSigmaResult::kNotFinal;
     }
 
     // The safe boundary can precede several complete words. Advance by the
     // exact boundary produced by the finished forward match and try again.
     boundary = match.acceptedEnd;
   }
-  return false;
+  return FinalSigmaResult::kNotFinal;
 }
 
 } // namespace
@@ -233,8 +380,11 @@ void adjustJavaSigmaInPlace(
     icu::UnicodeString& input,
     folly::Range<const int32_t*> sigmaOffsets) {
   for (const auto offset : sigmaOffsets) {
-    input.setCharAt(
-        offset, isJavaFinalSigma(input, offset) ? kFinalSigma : kSmallSigma);
+    const auto evaluation = evaluateJavaFinalSigma(input, offset);
+    const auto isFinal = evaluation == FinalSigmaResult::kNeedsUtf16Fallback
+        ? isJavaFinalSigmaWithSurrogates(input, offset)
+        : evaluation == FinalSigmaResult::kFinal;
+    input.setCharAt(offset, isFinal ? kFinalSigma : kSmallSigma);
   }
 }
 
