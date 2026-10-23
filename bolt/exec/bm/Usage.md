@@ -231,6 +231,14 @@ session.evictLoadedChunks(targetBytes);
 Eviction is chunk-granular, so the reclaimed bytes can exceed `targetBytes`.
 Call `loadRowsScoped()` again to read the same RowIds later.
 
+For a sequential read whose consumed rows will never be needed again, call
+`session.releaseConsumedChunk(consumedRange)` after ending its scoped batch.
+The caller must have consumed every row through the range's end. The operation
+releases only the finalized chunk ending exactly there, with no outstanding
+leases or pins. Partial chunks and active write chunks remain available.
+Unlike eviction, this permanently removes the chunk's data; it cannot be read
+again. Release of the scoped batch alone only unpins its blocks.
+
 Release data permanently:
 
 ```cpp
