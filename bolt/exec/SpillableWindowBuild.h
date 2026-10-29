@@ -110,6 +110,11 @@ class SpillableWindowBuild : public WindowBuild {
 
   std::unique_ptr<WindowPartition> createPartialPartition();
 
+  int64_t fixedArgumentBytes_{0};
+  int64_t variableArgumentCount_{0};
+  int64_t fixedResultBytes_{0};
+  int64_t variableResultCount_{0};
+
   void storeRows();
 
   void loadNextPartitionFromSpill();
